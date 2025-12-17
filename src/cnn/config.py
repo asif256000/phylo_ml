@@ -179,7 +179,8 @@ def _parse_data_settings(payload: Mapping[str, Any], base_path: Path | None) -> 
     dataset_value = data_payload.get("dataset_file") or payload.get("dataset_file")
     if dataset_value is None:
         raise ConfigurationError("'data.dataset_file' must be provided")
-    dataset_path = _resolve_path(dataset_value, base_path)
+    # Read dataset path as provided, without resolving relative to workspace
+    dataset_path = Path(str(dataset_value)).expanduser()
 
     batch_size = int(data_payload.get("batch_size", 32))
     if batch_size <= 0:
@@ -309,7 +310,8 @@ def _parse_output_settings(
         raise ConfigurationError("'outputs' section must be a mapping")
 
     branch_plot_dir_value = output_payload.get("branch_plot_dir", "branch_plots")
-    branch_plot_dir = _resolve_path(branch_plot_dir_value, base_path)
+    # Read branch plot directory as provided, without resolving relative to workspace
+    branch_plot_dir = Path(str(branch_plot_dir_value)).expanduser()
     zoomed_plots = bool(output_payload.get("zoomed_plots", False))
     individual_branch_plots = bool(output_payload.get("individual_branch_plots", False))
     branch_sum_plots = bool(output_payload.get("branch_sum_plots", False))
