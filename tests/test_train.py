@@ -25,7 +25,7 @@ def test_split_indices_raises_when_dataset_too_small():
         split_indices(total_size=2, train_ratio=0.7, val_ratio=0.2, seed=0)
 
 
-def test_training_config_resolves_paths_relative_to_project_root(tmp_path):
+def test_training_config_uses_absolute_paths_as_is(tmp_path):
     project_root = tmp_path
     config_dir = project_root / "config"
     config_dir.mkdir()
@@ -35,15 +35,15 @@ def test_training_config_resolves_paths_relative_to_project_root(tmp_path):
 
     payload = {
         "seed": 7,
-        "data": {"dataset_file": "npy_data/sample.npy"},
+        "data": {"dataset_file": str((data_dir / "sample.npy").resolve())},
         "trainer": {},
         "model": {},
-        "outputs": {"branch_plot_dir": "branch_plots/run"},
+        "outputs": {"branch_plot_dir": str((project_root / "branch_plots/run").resolve())},
     }
 
     config = TrainingConfig.from_mapping(payload, base_path=config_dir)
 
-    expected_dataset = (project_root / "npy_data/sample.npy").resolve()
+    expected_dataset = (data_dir / "sample.npy").resolve()
     expected_plots = (project_root / "branch_plots/run").resolve()
 
     assert config.data.dataset_file == expected_dataset
@@ -87,7 +87,7 @@ def test_trainer_raises_when_num_outputs_mismatch(tmp_path):
         "seed": 1,
         "label_transform": {"strategy": "sqrt"},
         "data": {
-            "dataset_file": "dataset.npy",
+            "dataset_file": str(dataset_path.resolve()),
             "batch_size": 1,
             "num_workers": 0,
             "train_ratio": 0.5,
@@ -95,7 +95,7 @@ def test_trainer_raises_when_num_outputs_mismatch(tmp_path):
         },
         "trainer": {"epochs": 1, "patience": 1, "learning_rate": 0.001, "weight_decay": 0.0},
         "model": {"num_outputs": 4},
-        "outputs": {"branch_plot_dir": "plots"},
+        "outputs": {"branch_plot_dir": str((tmp_path / "plots").resolve())},
     }
 
     config = TrainingConfig.from_mapping(payload, base_path=tmp_path)
