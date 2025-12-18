@@ -10,6 +10,7 @@ from matplotlib import colors
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+from sklearn.metrics import mean_absolute_error, mean_squared_error, root_mean_squared_error, r2_score
 
 from .model import CNNModel
 
@@ -55,6 +56,7 @@ class TrainingConfig:
     val_ratio: float = 0.15
     seed: int = 42
     epochs: int = 20
+    patience: int = 20
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
     label_transform: str = "sqrt"
@@ -62,7 +64,7 @@ class TrainingConfig:
     model_in_channels: int = 4
     model_rooted: bool = True
     model_num_outputs: int | None = None
-    branch_plot_dir: Path | None = None
+    results_dir: Path | None = None
     zoomed_plots: bool = False
     individual_branch_plots: bool = False
     branch_sum_plots: bool = False
@@ -325,13 +327,57 @@ def _plot_branch_pair_high_def(
 
 
 def _summarize_branch_metrics(true_vals: np.ndarray, pred_vals: np.ndarray) -> dict[str, float]:
-    mae = float(np.mean(np.abs(true_vals - pred_vals)))
-    mse = float(np.mean((true_vals - pred_vals) ** 2))
-    rmse = float(np.sqrt(mse))
-    # Avoid division by zero for R2 when variance is zero
-    var = float(np.var(true_vals))
-    r2 = float(1.0 - mse / var) if var > 0 else float("nan")
-    return {"mae": mae, "rmse": rmse, "r2": r2}
+    mae = float(mean_absolute_error(true_vals, pred_vals))
+    mse = float(mean_squared_error(true_vals, pred_vals))
+    rmse = float(root_mean_squared_error(true_vals, pred_vals))
+    r2 = float(r2_score(true_vals, pred_vals))
+    return {"mae": mae, "mse": mse, "rmse": rmse, "r2": r2}
+
+
+def _save_predictions_and_metrics(
+    results_dir: Path,
+    preds: np.ndarray,
+    trues: np.ndarray,
+    metrics: dict[str, float],
+    train_losses: list[float],
+    val_losses: list[float],
+    test_loss: float,
+) -> None:
+    """Save predictions and metrics to text files in results_dir."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save predictions vs actual values
+    predictions_file = results_dir / "predictions.txt"
+    with open(predictions_file, "w") as f:
+        f.write("Sample,Branch,Actual,Predicted\n")
+        num_samples = preds.shape[0]
+        num_branches = preds.shape[1] if preds.ndim > 1 else 1
+        
+        if preds.ndim == 1:
+            for sample_idx in range(num_samples):
+                f.write(f"{sample_idx},0,{trues[sample_idx]:.6f},{preds[sample_idx]:.6f}\n")
+        else:
+            for sample_idx in range(num_samples):
+                for branch_idx in range(num_branches):
+                    f.write(
+                        f"{sample_idx},{branch_idx},"
+                        f"{trues[sample_idx, branch_idx]:.6f},"
+                        f"{preds[sample_idx, branch_idx]:.6f}\n"
+                    )
+    
+    # Save metrics
+    metrics_file = results_dir / "metrics.txt"
+    with open(metrics_file, "w") as f:
+        f.write("=== Performance Metrics ===\n")
+        f.write(f"MAE: {metrics.get('mae', 'N/A')}\n")
+        f.write(f"MSE: {metrics.get('mse', 'N/A')}\n")
+        f.write(f"RMSE: {metrics.get('rmse', 'N/A')}\n")
+        f.write(f"R2: {metrics.get('r2', 'N/A')}\n")
+        f.write("\n=== Loss History ===\n")
+        f.write(f"Best Val Loss: {min(val_losses) if val_losses else 'N/A'}\n")
+        f.write(f"Test Loss: {test_loss:.6f}\n")
+        f.write(f"Final Train Loss: {train_losses[-1]:.6f}\n")
+        f.write(f"Final Val Loss: {val_losses[-1]:.6f}\n")
 
 
 def _plot_loss_curve(train_losses: list[float], val_losses: list[float], output_path: Path) -> None:
@@ -395,6 +441,10 @@ class Trainer:
             tree_rooted=cfg.model_rooted,
         ).to(self.device)
 
+        print("\n" + "=" * 60)
+        print(model)
+        print("=" * 60 + "\n")
+
         train_loader, val_loader, test_loader = _build_dataloaders(
             data=dataset,
             y_br=y_br,
@@ -415,30 +465,53 @@ class Trainer:
         best_state: dict[str, torch.Tensor] | None = None
         train_losses: list[float] = []
         val_losses: list[float] = []
+        epochs_without_improvement = 0
+        last_epoch = 0
+        last_train_loss = 0.0
+        last_val_loss = 0.0
 
         for epoch in range(1, cfg.epochs + 1):
             train_loss = _train_epoch(model, train_loader, criterion, optimizer, self.device)
             val_loss = _evaluate(model, val_loader, criterion, self.device)
             train_losses.append(train_loss)
             val_losses.append(val_loss)
+            last_epoch = epoch
+            last_train_loss = train_loss
+            last_val_loss = val_loss
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                epochs_without_improvement = 0
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            else:
+                epochs_without_improvement += 1
 
-            print(f"Epoch {epoch:02d}/{cfg.epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+            if epoch % 5 == 0:
+                print(f"Epoch {epoch:02d}/{cfg.epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+
+            if epochs_without_improvement >= cfg.patience:
+                print(
+                    "Early stopping triggered after "
+                    f"{epoch} epochs (no val improvement for {cfg.patience} epochs)."
+                )
+                break
 
         if best_state is not None:
             model.load_state_dict(best_state)
 
         test_loss = _evaluate(model, test_loader, criterion, self.device)
         runtime = time.time() - start
-        print(f"Test Loss: {test_loss:.6f} (best val: {best_val_loss:.6f})")
 
-        branch_plot_dir = (cfg.branch_plot_dir or Path("branch_plots")).expanduser().resolve()
-        branch_plot_dir.mkdir(parents=True, exist_ok=True)
+        print("\n" + "=" * 60)
+        print(f"Final Epoch {last_epoch} | Train Loss: {last_train_loss:.6f} | Test Loss: {test_loss:.6f} | Best Val Loss: {last_val_loss:.6f}")
+        print("=" * 60 + "\n")
 
-        _plot_loss_curve(train_losses, val_losses, branch_plot_dir / "loss_curve.png")
+        results_dir = (cfg.results_dir or Path("results")).expanduser().resolve()
+        results_dir .mkdir(parents=True, exist_ok=True)
+        plots_dir = results_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        _plot_loss_curve(train_losses, val_losses, plots_dir / "loss_curve.png")
 
         preds, trues = _collect_predictions(model, test_loader, self.device, self.transformer)
         overall_metrics: dict[str, float] = {}
@@ -451,22 +524,23 @@ class Trainer:
                     _plot_branch_pair(
                         true_branch,
                         pred_branch,
-                        branch_plot_dir / f"branch_b{idx + 1}_scatter.png",
+                        plots_dir / f"branch_b{idx + 1}_scatter.png",
                         f"Branch b{idx + 1}: true vs predicted",
                     )
                     if cfg.zoomed_plots:
                         _plot_branch_pair_high_def(
                             true_branch,
                             pred_branch,
-                            branch_plot_dir / f"branch_b{idx + 1}_scatter_hd.png",
+                            plots_dir / f"branch_b{idx + 1}_scatter_hd.png",
                             f"Branch b{idx + 1} HD: true vs predicted",
                         )
 
                 branch_metrics = _summarize_branch_metrics(true_branch, pred_branch)
                 print(
-                    "Branch b{idx} Metrics | MAE: {mae:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
+                    "Branch b{idx} Metrics | MAE: {mae:.4f} | MSE: {mse:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
                         idx=idx + 1,
                         mae=branch_metrics["mae"],
+                        mse=branch_metrics["mse"],
                         rmse=branch_metrics["rmse"],
                         r2=branch_metrics["r2"],
                     )
@@ -478,7 +552,7 @@ class Trainer:
                 _plot_branch_pair(
                     true_sum,
                     pred_sum,
-                    branch_plot_dir / "branch_sum_scatter.png",
+                    plots_dir / "branch_sum_scatter.png",
                     "Branch sum: true vs predicted",
                 )
 
@@ -487,13 +561,27 @@ class Trainer:
             flat_pred = preds.reshape(-1)
             overall_metrics = _summarize_branch_metrics(flat_true, flat_pred)
             print(
-                "Overall Branch Metrics | MAE: {mae:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
-                    mae=overall_metrics["mae"], rmse=overall_metrics["rmse"], r2=overall_metrics["r2"]
+                "Overall Branch Metrics | MAE: {mae:.4f} | MSE: {mse:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
+                    mae=overall_metrics["mae"],
+                    mse=overall_metrics["mse"],
+                    rmse=overall_metrics["rmse"],
+                    r2=overall_metrics["r2"],
                 )
             )
 
-        print(f"Branch plots saved to: {branch_plot_dir}")
+        print(f"Results saved to: {results_dir }")
         print(f"Total runtime: {runtime:.2f} seconds")
+
+        # Save predictions and metrics to files
+        _save_predictions_and_metrics(
+            results_dir ,
+            preds,
+            trues,
+            overall_metrics,
+            train_losses,
+            val_losses,
+            test_loss,
+        )
 
         return TrainingResult(
             best_val_loss=best_val_loss,
@@ -533,6 +621,7 @@ def build_config_from_mapping(payload: dict[str, Any]) -> TrainingConfig:
         val_ratio=float(data_section.get("val_ratio", 0.15)),
         seed=int(data_section.get("seed", payload.get("seed", 42))),
         epochs=int(trainer_section.get("epochs", 20)),
+        patience=int(trainer_section.get("patience", 20)),
         learning_rate=float(trainer_section.get("learning_rate", 1e-3)),
         weight_decay=float(trainer_section.get("weight_decay", 0.0)),
         label_transform=str(label_strategy),
@@ -544,7 +633,7 @@ def build_config_from_mapping(payload: dict[str, Any]) -> TrainingConfig:
             if model_section.get("num_outputs") is not None
             else None
         ),
-        branch_plot_dir=Path(str(outputs_section.get("branch_plot_dir", "branch_plots"))).expanduser().resolve(),
+        results_dir=Path(str(outputs_section.get("results_dir", outputs_section.get("results_dir ", "branch_plots")))).expanduser().resolve(),
         zoomed_plots=bool(outputs_section.get("zoomed_plots", False)),
         individual_branch_plots=bool(outputs_section.get("individual_branch_plots", False)),
         branch_sum_plots=bool(outputs_section.get("branch_sum_plots", False)),
