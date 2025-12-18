@@ -38,20 +38,20 @@ class CNNModel(nn.Module):
         # Convolutional stack (explicit modules, no ModuleList)
         self.conv1 = nn.Conv2d(
             in_channels=in_channels,
-            out_channels=64,
+            out_channels=128,
             kernel_size=(num_taxa, 1),
-            stride=(1, 1),
-            padding=(0, 0),
+            stride=(num_taxa, 1),
+            # padding=(0, 0),
         )
         self.act1 = nn.ReLU()
         self.pool1 = nn.Identity()
 
         self.conv2 = nn.Conv2d(
-            in_channels=64,
-            out_channels=128,
+            in_channels=128,
+            out_channels=64,
             kernel_size=(1, 3),
             stride=(1, 1),
-            padding=(0, 1),
+            # padding=(0, 1),
         )
         self.act2 = nn.ReLU()
         self.pool2 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
@@ -60,7 +60,7 @@ class CNNModel(nn.Module):
         self.flatten = nn.Flatten()
 
         # Fully connected stack
-        self.fc1 = nn.Linear(128, 256)
+        self.fc1 = nn.Linear(64, 256)
         self.fc1_act = nn.ReLU()
         self.fc1_drop = nn.Identity()
 
