@@ -1,8 +1,8 @@
 **.xml
 **.npy
 **.png
+**.txt
 **.out
-branch_plots/
 bkp_**
 phylo_*.sh
 .vscode
