@@ -7,7 +7,7 @@ from src.utils import format_tuple
 
 
 class CNNModel(nn.Module):
-    """Hardcoded CNN for branch-length regression only (no classification head).
+    """Hardcoded CNN for branch-length regression only.
 
     Architecture is fixed (two conv blocks, two linear blocks) and configured only by
     input channel count, taxa count, and output size. This keeps YAML model settings
@@ -35,12 +35,12 @@ class CNNModel(nn.Module):
         self.label_transform_strategy = label_transform or "none"
         self.tree_rooted = tree_rooted
 
-        # Convolutional stack (explicit modules, no ModuleList)
+        # Convolutional stack
         self.conv1 = nn.Conv2d(
             in_channels=in_channels,
             out_channels=128,
             kernel_size=(num_taxa, 1),
-            stride=(num_taxa, 1),
+            stride=(1, 1),
             # padding=(0, 0),
         )
         self.act1 = nn.ReLU()
