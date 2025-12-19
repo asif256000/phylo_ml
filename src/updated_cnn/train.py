@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,63 @@ from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import mean_absolute_error, mean_squared_error, root_mean_squared_error, r2_score
 
 from .model import CNNModel
+
+
+def _warn_if_negative(values, context: str, source: str) -> None:
+    """Emit an uppercase warning if any branch length is negative."""
+    if isinstance(values, torch.Tensor):
+        if torch.any(values < 0):
+            min_val = float(torch.min(values).item())
+            warnings.warn(
+                f"{context} DETECTED NEGATIVE {source} BRANCH LENGTH: {min_val:.6f}",
+                RuntimeWarning,
+            )
+    else:
+        array = np.asarray(values)
+        if np.any(array < 0):
+            min_val = float(np.min(array))
+            warnings.warn(
+                f"{context} DETECTED NEGATIVE {source} BRANCH LENGTH: {min_val:.6f}",
+                RuntimeWarning,
+            )
+
+
+def _get_next_results_dir(base_path: Path) -> Path:
+    """Find next available results directory with intelligent suffix numbering.
+    
+    If base_path exists, returns base_path_1, base_path_2, etc.
+    Looks for existing suffixes and increments to find the next available number.
+    
+    Args:
+        base_path: The desired results directory path
+        
+    Returns:
+        Path object for the next available directory (doesn't create it)
+    """
+    if not base_path.exists():
+        return base_path
+    
+    # Base path exists, find highest existing suffix
+    parent = base_path.parent
+    base_name = base_path.name
+    
+    # Find all directories matching base_name or base_name_N pattern
+    existing_suffixes = [0]  # 0 represents the base directory itself
+    
+    if parent.exists():
+        for item in parent.iterdir():
+            if item.is_dir():
+                name = item.name
+                if name == base_name:
+                    existing_suffixes.append(0)
+                elif name.startswith(base_name + "_"):
+                    suffix_part = name[len(base_name) + 1:]
+                    if suffix_part.isdigit():
+                        existing_suffixes.append(int(suffix_part))
+    
+    # Find next available suffix
+    next_suffix = max(existing_suffixes) + 1
+    return parent / f"{base_name}_{next_suffix}"
 
 
 class LabelTransformer:
@@ -249,7 +307,14 @@ def _collect_predictions(
         trues.append(transformer.inverse_tensor(y_br).cpu().numpy())
     if not preds:
         return np.array([]), np.array([])
-    return np.vstack(preds), np.vstack(trues)
+    
+    preds_arr = np.vstack(preds)
+    trues_arr = np.vstack(trues)
+    
+    # Check for negative predictions after inverse transform
+    _warn_if_negative(preds_arr, "POST-TRANSFORM:", "PREDICTED")
+    
+    return preds_arr, trues_arr
 
 
 def _plot_branch_pair(
@@ -342,6 +407,7 @@ def _save_predictions_and_metrics(
     train_losses: list[float],
     val_losses: list[float],
     test_loss: float,
+    branch_metrics: list[dict[str, float]] | None = None,
 ) -> None:
     """Save predictions and metrics to text files in results_dir."""
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -373,6 +439,19 @@ def _save_predictions_and_metrics(
         f.write(f"MSE: {metrics.get('mse', 'N/A')}\n")
         f.write(f"RMSE: {metrics.get('rmse', 'N/A')}\n")
         f.write(f"R2: {metrics.get('r2', 'N/A')}\n")
+
+        if branch_metrics:
+            f.write("\n=== Per-Branch Metrics ===\n")
+            for idx, bm in enumerate(branch_metrics, start=1):
+                f.write(
+                    "Branch b{idx} | MAE: {mae:.6f} | MSE: {mse:.6f} | RMSE: {rmse:.6f} | R2: {r2:.6f}\n".format(
+                        idx=idx,
+                        mae=bm.get("mae", float("nan")),
+                        mse=bm.get("mse", float("nan")),
+                        rmse=bm.get("rmse", float("nan")),
+                        r2=bm.get("r2", float("nan")),
+                    )
+                )
         f.write("\n=== Loss History ===\n")
         f.write(f"Best Val Loss: {min(val_losses) if val_losses else 'N/A'}\n")
         f.write(f"Test Loss: {test_loss:.6f}\n")
@@ -429,13 +508,27 @@ class Trainer:
             raise ValueError("Encoded feature matrix must have shape (taxa, seq_length, channels)")
         num_clades, seq_length, num_channels = example["X"].shape
 
-        y_br = dataset["y_br"]
-        y_br = self.transformer.transform_numpy(y_br)
-        num_outputs = y_br.shape[-1]
+        # Load raw targets and normalize shape before any transformation
+        y_br_raw = dataset["y_br"]
+        if y_br_raw.ndim == 1:
+            y_br_raw = y_br_raw[:, None]
+        y_br_raw = y_br_raw.astype(np.float32, copy=False)
+
+        target_width = int(y_br_raw.shape[1])
+        configured_outputs = cfg.model_num_outputs
+        if configured_outputs is not None and int(configured_outputs) != target_width:
+            raise ValueError(
+                "Configured 'model.num_outputs' does not match dataset target width: "
+                f"{configured_outputs} != {target_width}"
+            )
+        effective_outputs = configured_outputs or target_width
+
+        # Apply label transform after shape checks
+        y_br = self.transformer.transform_numpy(y_br_raw)
 
         model = CNNModel(
             num_taxa=num_clades,
-            num_outputs=cfg.model_num_outputs or num_outputs,
+            num_outputs=effective_outputs,
             in_channels=cfg.model_in_channels or num_channels,
             label_transform=cfg.label_transform,
             tree_rooted=cfg.model_rooted,
@@ -506,8 +599,9 @@ class Trainer:
         print(f"Final Epoch {last_epoch} | Train Loss: {last_train_loss:.6f} | Test Loss: {test_loss:.6f} | Best Val Loss: {last_val_loss:.6f}")
         print("=" * 60 + "\n")
 
-        results_dir = (cfg.results_dir or Path("results")).expanduser().resolve()
-        results_dir .mkdir(parents=True, exist_ok=True)
+        base_results_dir = (cfg.results_dir or Path("results")).expanduser().resolve()
+        results_dir = _get_next_results_dir(base_results_dir)
+        results_dir.mkdir(parents=True, exist_ok=True)
         plots_dir = results_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
 
@@ -515,6 +609,7 @@ class Trainer:
 
         preds, trues = _collect_predictions(model, test_loader, self.device, self.transformer)
         overall_metrics: dict[str, float] = {}
+        branch_metrics_list: list[dict[str, float]] = []
         if preds.size > 0 and trues.size > 0:
             num_branches = preds.shape[1]
             for idx in range(num_branches):
@@ -536,6 +631,7 @@ class Trainer:
                         )
 
                 branch_metrics = _summarize_branch_metrics(true_branch, pred_branch)
+                branch_metrics_list.append(branch_metrics)
                 print(
                     "Branch b{idx} Metrics | MAE: {mae:.4f} | MSE: {mse:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
                         idx=idx + 1,
@@ -581,6 +677,7 @@ class Trainer:
             train_losses,
             val_losses,
             test_loss,
+            branch_metrics_list if branch_metrics_list else None,
         )
 
         return TrainingResult(
