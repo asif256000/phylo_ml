@@ -40,7 +40,7 @@ class CNNModel(nn.Module):
             in_channels=in_channels,
             out_channels=128,
             kernel_size=(num_taxa, 1),
-            stride=(1, 1),
+            stride=(num_taxa, 1),
             # padding=(0, 0),
         )
         self.act1 = nn.ReLU()
@@ -54,7 +54,7 @@ class CNNModel(nn.Module):
             # padding=(0, 1),
         )
         self.act2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
+        self.pool2 = nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2))
 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.flatten = nn.Flatten()
@@ -106,7 +106,7 @@ class CNNModel(nn.Module):
     def __str__(self) -> str:
         return "\n".join(
             [
-                "CNNModel architecture (regression only):",
+                "CNNModel architecture:",
                 f"  Inputs: in_channels={self.in_channels}, num_taxa={self.num_taxa}, rooted={self.tree_rooted}",
                 f"  Label transform: {self.label_transform_strategy}",
                 f"  Outputs: num_outputs={self.num_outputs}",
