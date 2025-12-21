@@ -403,11 +403,14 @@ def _save_predictions_and_metrics(
     results_dir: Path,
     preds: np.ndarray,
     trues: np.ndarray,
-    metrics: dict[str, float],
     train_losses: list[float],
     val_losses: list[float],
     test_loss: float,
     branch_metrics: list[dict[str, float]] | None = None,
+    model_arch: str | None = None,
+    training_status: str | None = None,
+    sum_metrics: dict[str, float] | None = None,
+    overall_metrics: dict[str, float] | None = None,
 ) -> None:
     """Save predictions and metrics to text files in results_dir."""
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -434,11 +437,10 @@ def _save_predictions_and_metrics(
     # Save metrics
     metrics_file = results_dir / "metrics.txt"
     with open(metrics_file, "w") as f:
-        f.write("=== Performance Metrics ===\n")
-        f.write(f"MAE: {metrics.get('mae', 'N/A')}\n")
-        f.write(f"MSE: {metrics.get('mse', 'N/A')}\n")
-        f.write(f"RMSE: {metrics.get('rmse', 'N/A')}\n")
-        f.write(f"R2: {metrics.get('r2', 'N/A')}\n")
+        # Model architecture at the top
+        if model_arch:
+            f.write("=== Model Architecture ===\n")
+            f.write(model_arch.rstrip("\n") + "\n\n")
 
         if branch_metrics:
             f.write("\n=== Per-Branch Metrics ===\n")
@@ -452,6 +454,33 @@ def _save_predictions_and_metrics(
                         r2=bm.get("r2", float("nan")),
                     )
                 )
+        if overall_metrics:
+            f.write("\n=== Overall Metrics ===\n")
+            f.write(
+                "MAE: {mae:.6f} | MSE: {mse:.6f} | RMSE: {rmse:.6f} | R2: {r2:.6f}\n".format(
+                    mae=overall_metrics.get("mae", float("nan")),
+                    mse=overall_metrics.get("mse", float("nan")),
+                    rmse=overall_metrics.get("rmse", float("nan")),
+                    r2=overall_metrics.get("r2", float("nan")),
+                )
+            )
+        if sum_metrics:
+            f.write("\n=== Total Branch Metrics ===\n")
+            f.write(
+                "MAE: {mae:.6f} | MSE: {mse:.6f} | RMSE: {rmse:.6f} | R2: {r2:.6f}\n".format(
+                    mae=sum_metrics.get("mae", float("nan")),
+                    mse=sum_metrics.get("mse", float("nan")),
+                    rmse=sum_metrics.get("rmse", float("nan")),
+                    r2=sum_metrics.get("r2", float("nan")),
+                )
+            )
+        # Training summary before losses
+        f.write("\n=== Training Summary ===\n")
+        if training_status:
+            f.write(training_status + "\n")
+        else:
+            f.write("Training status not available.\n")
+
         f.write("\n=== Loss History ===\n")
         f.write(f"Best Val Loss: {min(val_losses) if val_losses else 'N/A'}\n")
         f.write(f"Test Loss: {test_loss:.6f}\n")
@@ -563,6 +592,7 @@ class Trainer:
         last_train_loss = 0.0
         last_val_loss = 0.0
 
+        early_stopped = False
         for epoch in range(1, cfg.epochs + 1):
             train_loss = _train_epoch(model, train_loader, criterion, optimizer, self.device)
             val_loss = _evaluate(model, val_loader, criterion, self.device)
@@ -587,6 +617,7 @@ class Trainer:
                     "Early stopping triggered after "
                     f"{epoch} epochs (no val improvement for {cfg.patience} epochs)."
                 )
+                early_stopped = True
                 break
 
         if best_state is not None:
@@ -608,8 +639,9 @@ class Trainer:
         _plot_loss_curve(train_losses, val_losses, plots_dir / "loss_curve.png")
 
         preds, trues = _collect_predictions(model, test_loader, self.device, self.transformer)
-        overall_metrics: dict[str, float] = {}
         branch_metrics_list: list[dict[str, float]] = []
+        sum_metrics: dict[str, float] | None = None
+        overall_metrics: dict[str, float] | None = None
         if preds.size > 0 and trues.size > 0:
             num_branches = preds.shape[1]
             for idx in range(num_branches):
@@ -642,9 +674,19 @@ class Trainer:
                     )
                 )
 
+            # Compute total/sum metrics regardless of plotting preference
+            true_sum = np.sum(trues, axis=1)
+            pred_sum = np.sum(preds, axis=1)
+            sum_metrics = _summarize_branch_metrics(true_sum, pred_sum)
+            print(
+                "Total Branch Metrics | MAE: {mae:.4f} | MSE: {mse:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
+                    mae=sum_metrics["mae"],
+                    mse=sum_metrics["mse"],
+                    rmse=sum_metrics["rmse"],
+                    r2=sum_metrics["r2"],
+                )
+            )
             if cfg.branch_sum_plots:
-                true_sum = np.sum(trues, axis=1)
-                pred_sum = np.sum(preds, axis=1)
                 _plot_branch_pair(
                     true_sum,
                     pred_sum,
@@ -652,7 +694,10 @@ class Trainer:
                     "Branch sum: true vs predicted",
                 )
 
-            # Overall metrics on flattened branch lengths
+            # Overall metrics across all branches (flattened):
+            # We treat each branch-length value independently by flattening
+            # the (num_samples, num_branches) arrays into 1D vectors.
+            # This yields a branch-wise accuracy view across the dataset.
             flat_true = trues.reshape(-1)
             flat_pred = preds.reshape(-1)
             overall_metrics = _summarize_branch_metrics(flat_true, flat_pred)
@@ -668,16 +713,27 @@ class Trainer:
         print(f"Results saved to: {results_dir }")
         print(f"Total runtime: {runtime:.2f} seconds")
 
-        # Save predictions and metrics to files
+        # Compose training status string
+        if early_stopped:
+            training_status = (
+                f"Early stopping triggered after {last_epoch} epochs (no val improvement for {cfg.patience} epochs)"
+            )
+        else:
+            training_status = f"Trained for full {cfg.epochs} epochs"
+
+        # Save predictions and metrics to files (no overall metrics)
         _save_predictions_and_metrics(
             results_dir ,
             preds,
             trues,
-            overall_metrics,
             train_losses,
             val_losses,
             test_loss,
-            branch_metrics_list if branch_metrics_list else None,
+            branch_metrics=branch_metrics_list if branch_metrics_list else None,
+            model_arch=str(model),
+            training_status=training_status,
+            sum_metrics=sum_metrics,
+            overall_metrics=overall_metrics,
         )
 
         return TrainingResult(
@@ -686,7 +742,7 @@ class Trainer:
             train_losses=train_losses,
             val_losses=val_losses,
             runtime_seconds=runtime,
-            metrics=overall_metrics,
+            metrics={},
         )
 
 
