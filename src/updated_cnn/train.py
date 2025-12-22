@@ -16,6 +16,33 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, root_mean_s
 from .model import CNNModel
 
 
+def _get_model_summary(model: CNNModel, num_clades: int, seq_length: int, num_channels: int, batch_size: int = 1) -> str:
+    """Get model details via torchinfo if available; fallback to __str__ otherwise."""
+    try:
+        from torchinfo import summary
+        from io import StringIO
+        import sys
+
+        # Capture torchinfo output
+        old_stdout = sys.stdout
+        sys.stdout = captured_output = StringIO()
+        
+        summary(
+            model,
+            input_size=(batch_size, num_channels, num_clades, seq_length),
+            col_names=("input_size", "output_size", "num_params"),
+            depth=3,
+            verbose=0,
+        )
+        
+        sys.stdout = old_stdout
+        summary_str = captured_output.getvalue()
+        return summary_str
+    except Exception as exc:
+        # Fallback preserves prior behavior if torchinfo is missing or fails
+        return f"(torchinfo unavailable or failed: {exc})\n{str(model)}"
+
+
 def _warn_if_negative(values, context: str, source: str) -> None:
     """Emit an uppercase warning if any branch length is negative."""
     if isinstance(values, torch.Tensor):
@@ -563,8 +590,15 @@ class Trainer:
             tree_rooted=cfg.model_rooted,
         ).to(self.device)
 
+        model_summary = _get_model_summary(
+            model,
+            num_clades=num_clades,
+            seq_length=seq_length,
+            num_channels=num_channels,
+            batch_size=min(cfg.batch_size, 4),
+        )
         print("\n" + "=" * 60)
-        print(model)
+        print(model_summary)
         print("=" * 60 + "\n")
 
         train_loader, val_loader, test_loader = _build_dataloaders(
@@ -730,7 +764,7 @@ class Trainer:
             val_losses,
             test_loss,
             branch_metrics=branch_metrics_list if branch_metrics_list else None,
-            model_arch=str(model),
+            model_arch=model_summary,
             training_status=training_status,
             sum_metrics=sum_metrics,
             overall_metrics=overall_metrics,
