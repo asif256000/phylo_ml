@@ -17,27 +17,22 @@ from .model import CNNModel
 
 
 def _get_model_summary(model: CNNModel, num_clades: int, seq_length: int, num_channels: int, batch_size: int = 1) -> str:
-    """Get model details via torchinfo if available; fallback to __str__ otherwise."""
+    """Get model details via torchinfo if available; fallback to __str__ otherwise.
+
+    Uses torchinfo.summary with verbose=0 to avoid printing and returns the
+    formatted string representation of the ModelStatistics object.
+    """
     try:
         from torchinfo import summary
-        from io import StringIO
-        import sys
 
-        # Capture torchinfo output
-        old_stdout = sys.stdout
-        sys.stdout = captured_output = StringIO()
-        
-        summary(
+        info = summary(
             model,
             input_size=(batch_size, num_channels, num_clades, seq_length),
             col_names=("input_size", "output_size", "num_params"),
             depth=3,
             verbose=0,
         )
-        
-        sys.stdout = old_stdout
-        summary_str = captured_output.getvalue()
-        return summary_str
+        return str(info)
     except Exception as exc:
         # Fallback preserves prior behavior if torchinfo is missing or fails
         return f"(torchinfo unavailable or failed: {exc})\n{str(model)}"
