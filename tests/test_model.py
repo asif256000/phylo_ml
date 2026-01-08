@@ -3,8 +3,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from src.cnn.config import TrainingConfig
 from src.cnn.model import CNNModel
+from src.configuration.training import TrainingConfig
 
 
 def test_model_forward_pass_output_shape():
@@ -14,7 +14,10 @@ def test_model_forward_pass_output_shape():
     num_outputs = 3
 
     dummy_input = torch.randn(batch_size, 4, num_taxa, seq_length)
-    training_config = TrainingConfig.from_mapping({"data": {"dataset_file": "dummy.npy"}}, base_path=Path.cwd())
+    training_config = TrainingConfig.from_mapping(
+        {"data": {"dataset_file": "dummy.npy"}},
+        base_path=Path.cwd(),
+    )
     model = CNNModel.from_config(
         training_config.model,
         num_taxa=num_taxa,
@@ -30,7 +33,10 @@ def test_model_forward_pass_output_shape():
 def test_model_layer_configuration():
     num_taxa = 2
     seq_length = 1000
-    training_config = TrainingConfig.from_mapping({"data": {"dataset_file": "dummy.npy"}}, base_path=Path.cwd())
+    training_config = TrainingConfig.from_mapping(
+        {"data": {"dataset_file": "dummy.npy"}},
+        base_path=Path.cwd(),
+    )
     model = CNNModel.from_config(
         training_config.model,
         num_taxa=num_taxa,
@@ -59,7 +65,10 @@ def test_model_layer_configuration():
 
 def test_model_string_representation_includes_layers():
     num_taxa = 2
-    training_config = TrainingConfig.from_mapping({"data": {"dataset_file": "dummy.npy"}}, base_path=Path.cwd())
+    training_config = TrainingConfig.from_mapping(
+        {"data": {"dataset_file": "dummy.npy"}},
+        base_path=Path.cwd(),
+    )
     model = CNNModel.from_config(
         training_config.model,
         num_taxa=num_taxa,

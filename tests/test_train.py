@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-from src.cnn.config import TrainingConfig
 from src.cnn.trainer import CNNTrainer, LabelTransformer, split_indices
+from src.configuration.training import TrainingConfig
 
 
 def test_split_indices_small_dataset_has_all_splits():
