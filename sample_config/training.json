@@ -1,12 +1,12 @@
 [
   {
     "seed": 42,
-    "label_transform": {"strategy": "sqrt"},
+    "label_transform": { "strategy": "sqrt" },
     "data": {
       "dataset_file": "npy_data/generated_trees.npy",
       "batch_size": 32,
       "num_workers": 0,
-      "train_ratio": 0.70,
+      "train_ratio": 0.7,
       "val_ratio": 0.15
     },
     "trainer": {
@@ -21,41 +21,50 @@
       "num_outputs": 3,
       "topology_classification": false,
       "topology_weight": 1.0,
-      "conv_layers": [
-        {
-          "out_channels": 64,
-          "kernel_size": [-1, 1],
-          "stride": [1, 1],
-          "padding": [0, 0],
-          "activation": "relu",
-          "pool": "identity"
-        },
-        {
-          "out_channels": 128,
-          "kernel_size": [1, 3],
-          "stride": [1, 1],
-          "padding": [0, 1],
-          "activation": "relu",
-          "pool": {
-            "type": "max",
-            "kernel_size": [1, 2],
-            "stride": [1, 2]
+      "cnn": {
+        "global_pool": "adaptive_avg",
+        "conv_layers": [
+          {
+            "out_channels": 64,
+            "kernel_size": [-1, 1],
+            "stride": [1, 1],
+            "padding": [0, 0],
+            "activation": "relu",
+            "pool": "identity"
+          },
+          {
+            "out_channels": 128,
+            "kernel_size": [1, 3],
+            "stride": [1, 1],
+            "padding": [0, 1],
+            "activation": "relu",
+            "pool": {
+              "type": "max",
+              "kernel_size": [1, 2],
+              "stride": [1, 2]
+            }
           }
-        }
-      ],
-      "linear_layers": [
-        {
-          "out_features": 256,
-          "activation": "relu",
-          "dropout": 0.0
-        },
-        {
-          "out_features": 256,
-          "activation": "relu",
-          "dropout": 0.2
-        }
-      ],
-      "global_pool": "adaptive_avg"
+        ],
+        "linear_layers": [
+          {
+            "out_features": 256,
+            "activation": "relu",
+            "dropout": 0.0
+          },
+          {
+            "out_features": 256,
+            "activation": "relu",
+            "dropout": 0.2
+          }
+        ]
+      },
+      "kan": {
+        "hidden_layers": [256, 128],
+        "grid": 5,
+        "spline_order": 3,
+        "noise_scale": 0.3,
+        "base_function": "silu"
+      }
     },
     "outputs": {
       "branch_plot_dir": "branch_plots/sample_run",
@@ -66,64 +75,47 @@
   },
   {
     "seed": 99,
-    "label_transform": {"strategy": "log"},
+    "label_transform": { "strategy": "log" },
     "data": {
       "dataset_file": "npy_data/three_taxa_example.npy",
-      "batch_size": 16,
+      "batch_size": 32,
       "num_workers": 0,
       "train_ratio": 0.75,
       "val_ratio": 0.15
     },
     "trainer": {
-      "epochs": 30,
+      "epochs": 40,
       "patience": 12,
-      "learning_rate": 0.0005,
+      "learning_rate": 0.0003,
       "weight_decay": 0.0
     },
     "model": {
       "in_channels": 5,
       "rooted": false,
       "num_outputs": 4,
-      "conv_layers": [
-        {
-          "out_channels": 48,
-          "kernel_size": [-1, 1],
-          "stride": [1, 1],
-          "padding": [0, 0],
-          "activation": "relu",
-          "pool": "identity"
-        },
-        {
-          "out_channels": 96,
-          "kernel_size": [1, 3],
-          "stride": [1, 1],
-          "padding": [0, 1],
-          "activation": "relu",
-          "pool": {
-            "type": "avg",
-            "kernel_size": [1, 2],
-            "stride": [1, 2]
-          }
-        }
-      ],
-      "linear_layers": [
-        {
-          "out_features": 192,
-          "activation": "relu",
-          "dropout": 0.1
-        },
-        {
-          "out_features": 192,
-          "activation": "relu",
-          "dropout": 0.3
-        }
-      ],
-      "global_pool": "adaptive_avg"
+      "topology_classification": false,
+      "topology_weight": 1.0,
+      "kan": {
+        "hidden_layers": [512, 256, 128],
+        "grid": 7,
+        "spline_order": 3,
+        "mult_arity": 2,
+        "noise_scale": 0.2,
+        "base_function": "silu",
+        "symbolic_enabled": false,
+        "sparse_init": false,
+        "auto_save": false,
+        "grid_eps": 0.05,
+        "grid_range": [-1.0, 1.0]
+      },
+      "cnn": {
+        "global_pool": "adaptive_avg"
+      }
     },
     "outputs": {
-      "branch_plot_dir": "branch_plots/indel_run",
+      "results_dir": "results/kan_example",
       "zoomed_plots": false,
-      "individual_branch_plots": true,
+      "individual_branch_plots": false,
       "branch_sum_plots": false
     }
   }
