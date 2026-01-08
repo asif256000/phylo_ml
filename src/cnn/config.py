@@ -63,6 +63,26 @@ class LinearLayerSettings:
 
 
 @dataclass(frozen=True)
+class KANSettings:
+    """Configuration for Kolmogorov-Arnold Network specific hyperparameters."""
+
+    hidden_layers: tuple[int, ...] = field(default_factory=tuple)
+    grid: int = 5
+    spline_order: int = 3
+    mult_arity: int = 2
+    noise_scale: float = 0.3
+    base_function: str = "silu"
+    symbolic_enabled: bool = True
+    affine_trainable: bool = False
+    grid_eps: float = 0.02
+    grid_range: tuple[float, float] = (-1.0, 1.0)
+    sp_trainable: bool = True
+    sb_trainable: bool = True
+    sparse_init: bool = False
+    auto_save: bool = False
+
+
+@dataclass(frozen=True)
 class ModelSettings:
     """Definition of the CNN architecture hyperparameters."""
 
@@ -75,6 +95,8 @@ class ModelSettings:
     rooted: bool = True
     topology_classification: bool = False
     topology_weight: float = 1.0
+    kind: str = "cnn"
+    kan_settings: KANSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -242,23 +264,49 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
     if not isinstance(model_payload, Mapping):
         raise ConfigurationError("'model' section must be a mapping")
 
-    in_channels = int(model_payload.get("in_channels", 4))
+    kind = str(model_payload.get("type", model_payload.get("kind", "cnn"))).lower()
+
+    cnn_payload = model_payload.get("cnn", {})
+    if cnn_payload and not isinstance(cnn_payload, Mapping):
+        raise ConfigurationError("'model.cnn' section must be a mapping when provided")
+
+    kan_payload = model_payload.get("kan")
+    if kan_payload is not None and not isinstance(kan_payload, Mapping):
+        raise ConfigurationError("'model.kan' section must be a mapping when provided")
+
+    in_channels_candidate = model_payload.get("in_channels")
+    if in_channels_candidate is None and isinstance(cnn_payload, Mapping):
+        in_channels_candidate = cnn_payload.get("in_channels")
+    in_channels = int(in_channels_candidate if in_channels_candidate is not None else 4)
     if in_channels <= 0:
         raise ConfigurationError("'model.in_channels' must be positive")
 
-    conv_layers_payload = model_payload.get("conv_layers")
+    conv_layers_payload = None
+    if isinstance(cnn_payload, Mapping):
+        conv_layers_payload = cnn_payload.get("conv_layers")
+    if conv_layers_payload is None:
+        conv_layers_payload = model_payload.get("conv_layers")
     if conv_layers_payload is None:
         conv_layers = _default_conv_layers()
     else:
         conv_layers = _parse_conv_layers(conv_layers_payload)
 
-    linear_layers_payload = model_payload.get("linear_layers")
+    linear_layers_payload = None
+    if isinstance(cnn_payload, Mapping):
+        linear_layers_payload = cnn_payload.get("linear_layers")
+    if linear_layers_payload is None:
+        linear_layers_payload = model_payload.get("linear_layers")
     if linear_layers_payload is None:
         linear_layers = _default_linear_layers()
     else:
         linear_layers = _parse_linear_layers(linear_layers_payload)
 
-    global_pool = str(model_payload.get("global_pool", "adaptive_avg")).lower()
+    global_pool_candidate = None
+    if isinstance(cnn_payload, Mapping):
+        global_pool_candidate = cnn_payload.get("global_pool")
+    if global_pool_candidate is None:
+        global_pool_candidate = model_payload.get("global_pool", "adaptive_avg")
+    global_pool = str(global_pool_candidate).lower()
     if global_pool not in _ALLOWED_GLOBAL_POOLS:
         raise ConfigurationError(
             f"'model.global_pool' must be one of {_ALLOWED_GLOBAL_POOLS}, received '{global_pool}'"
@@ -289,6 +337,8 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
     if topology_weight < 0:
         raise ConfigurationError("'model.topology_weight' cannot be negative")
 
+    kan_settings = _parse_kan_settings(kan_payload) if kan_payload is not None else None
+
     return ModelSettings(
         in_channels=in_channels,
         conv_layers=conv_layers,
@@ -299,6 +349,8 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
         rooted=rooted,
         topology_classification=topology_classification,
         topology_weight=topology_weight,
+        kind=kind,
+        kan_settings=kan_settings,
     )
 
 
@@ -422,24 +474,92 @@ def _parse_linear_layers(data: Sequence[Any]) -> tuple[LinearLayerSettings, ...]
     return tuple(layers)
 
 
+def _parse_kan_settings(payload: Mapping[str, Any]) -> KANSettings:
+    if not isinstance(payload, Mapping):
+        raise ConfigurationError("'model.kan' must be a mapping when provided")
+
+    hidden_layers_value = payload.get("hidden_layers", (128, 64))
+    if isinstance(hidden_layers_value, Sequence) and not isinstance(hidden_layers_value, (str, bytes)):
+        hidden_layers = tuple(int(v) for v in hidden_layers_value)
+    else:
+        raise ConfigurationError("'model.kan.hidden_layers' must be a sequence of integers")
+    if not hidden_layers:
+        raise ConfigurationError("'model.kan.hidden_layers' must contain at least one hidden layer size")
+    if any(size <= 0 for size in hidden_layers):
+        raise ConfigurationError("'model.kan.hidden_layers' values must be positive")
+
+    grid = int(payload.get("grid", 5))
+    if grid <= 0:
+        raise ConfigurationError("'model.kan.grid' must be positive")
+
+    spline_order = int(payload.get("spline_order", 3))
+    if spline_order <= 0:
+        raise ConfigurationError("'model.kan.spline_order' must be positive")
+
+    mult_arity = int(payload.get("mult_arity", 2))
+    if mult_arity <= 0:
+        raise ConfigurationError("'model.kan.mult_arity' must be positive")
+
+    noise_scale = float(payload.get("noise_scale", 0.3))
+    if noise_scale < 0:
+        raise ConfigurationError("'model.kan.noise_scale' cannot be negative")
+
+    base_function = str(payload.get("base_function", "silu"))
+
+    symbolic_enabled = bool(payload.get("symbolic_enabled", True))
+    affine_trainable = bool(payload.get("affine_trainable", False))
+    sparse_init = bool(payload.get("sparse_init", False))
+    auto_save = bool(payload.get("auto_save", False))
+
+    grid_eps = float(payload.get("grid_eps", 0.02))
+    if not 0 <= grid_eps <= 1:
+        raise ConfigurationError("'model.kan.grid_eps' must be between 0 and 1")
+
+    grid_range_value = payload.get("grid_range", (-1.0, 1.0))
+    try:
+        grid_range = tuple(float(v) for v in grid_range_value)
+    except (TypeError, ValueError):
+        raise ConfigurationError("'model.kan.grid_range' must contain numeric values")
+    if len(grid_range) != 2:
+        raise ConfigurationError("'model.kan.grid_range' must contain exactly two values")
+    if grid_range[0] >= grid_range[1]:
+        raise ConfigurationError("'model.kan.grid_range' lower bound must be less than upper bound")
+
+    sp_trainable = bool(payload.get("sp_trainable", True))
+    sb_trainable = bool(payload.get("sb_trainable", True))
+
+    return KANSettings(
+        hidden_layers=hidden_layers,
+        grid=grid,
+        spline_order=spline_order,
+        mult_arity=mult_arity,
+        noise_scale=noise_scale,
+        base_function=base_function,
+        symbolic_enabled=symbolic_enabled,
+        affine_trainable=affine_trainable,
+        grid_eps=grid_eps,
+        grid_range=grid_range,
+        sp_trainable=sp_trainable,
+        sb_trainable=sb_trainable,
+        sparse_init=sparse_init,
+        auto_save=auto_save,
+    )
+
+
 def _parse_pooling(pool_payload: Any) -> PoolingSettings:
     if pool_payload is None:
         return PoolingSettings()
     if isinstance(pool_payload, str):
         kind = pool_payload.lower()
         if kind not in _ALLOWED_POOL_KINDS:
-            raise ConfigurationError(
-                f"Pooling kind '{kind}' is not supported; allowed values: {_ALLOWED_POOL_KINDS}"
-            )
+            raise ConfigurationError(f"Pooling kind '{kind}' is not supported; allowed values: {_ALLOWED_POOL_KINDS}")
         return PoolingSettings(kind=kind)
     if not isinstance(pool_payload, Mapping):
         raise ConfigurationError("'pool' definition must be a string or mapping")
 
     kind = str(pool_payload.get("type", pool_payload.get("kind", "identity"))).lower()
     if kind not in _ALLOWED_POOL_KINDS:
-        raise ConfigurationError(
-            f"Pooling kind '{kind}' is not supported; allowed values: {_ALLOWED_POOL_KINDS}"
-        )
+        raise ConfigurationError(f"Pooling kind '{kind}' is not supported; allowed values: {_ALLOWED_POOL_KINDS}")
 
     kernel_size = _parse_pair(pool_payload.get("kernel_size"), "pool.kernel_size", required=False)
     stride = _parse_pair(pool_payload.get("stride"), "pool.stride", required=False)
