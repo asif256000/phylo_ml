@@ -7,21 +7,23 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib import colors
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from matplotlib import colors
 from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
     mean_absolute_error,
     mean_squared_error,
-    r2_score,
-    confusion_matrix,
-    classification_report,
     precision_recall_fscore_support,
+    r2_score,
 )
+from torch.utils.data import DataLoader, Dataset
 
-from .config import TrainingConfig
+from src.configuration.training import TrainingConfig
+
 from .model import CNNModel
+
 # from .hardcoded_model import CNNModel
 
 
@@ -83,13 +85,13 @@ class SequenceDataset(Dataset):
         self.num_clades = num_clades
         self.seq_length = seq_length
         self.num_channels = num_channels
-        
+
         if y_br.dtype != np.float32:
             y_br = y_br.astype(np.float32, copy=False)
         self.y_br = np.ascontiguousarray(y_br)
-        
+
         self.branch_mask = np.ascontiguousarray(branch_mask)
-        
+
         if y_top.dtype != np.float32:
             y_top = y_top.astype(np.float32, copy=False)
         self.y_top = np.ascontiguousarray(y_top)
@@ -101,9 +103,7 @@ class SequenceDataset(Dataset):
         record = self.data[self.indices[idx]]
         encoded = record["X"]
         if encoded.ndim != 3:
-            raise ValueError(
-                "Expected encoded features to have 3 dimensions (taxa, seq_length, nucleotides)"
-            )
+            raise ValueError("Expected encoded features to have 3 dimensions (taxa, seq_length, nucleotides)")
         if encoded.shape != (self.num_clades, self.seq_length, self.num_channels):
             raise ValueError(
                 "Encoded feature matrix shape mismatch: "
@@ -111,11 +111,11 @@ class SequenceDataset(Dataset):
             )
         encoded = np.transpose(encoded, (2, 0, 1))  # -> (channels, taxa, seq_length)
         features = torch.from_numpy(np.ascontiguousarray(encoded, dtype=np.float32))
-        
+
         y_br = torch.from_numpy(self.y_br[self.indices[idx]])
         branch_mask = torch.from_numpy(self.branch_mask[self.indices[idx]])
         y_top = torch.from_numpy(self.y_top[self.indices[idx]])
-        
+
         return features, y_br, branch_mask, y_top
 
 
@@ -160,7 +160,7 @@ def split_indices(
 
     train_idx = permutation[:train_end]
     val_idx = permutation[train_end:val_end]
-    test_idx = permutation[val_end:val_end + test_size]
+    test_idx = permutation[val_end : val_end + test_size]
 
     return train_idx, val_idx, test_idx
 
@@ -249,23 +249,23 @@ def _train_epoch(
 
         optimizer.zero_grad()
         pred_br, pred_top = model(features)
-        
+
         # Regression loss (masked)
         # We assume criterion is MSELoss(reduction='none') or similar, but we need to handle masking manually
         # if criterion is standard MSELoss.
         # Let's calculate MSE manually for masked elements.
-        
+
         diff = (pred_br - y_br) * branch_mask
-        loss_br = torch.sum(diff ** 2) / torch.clamp(torch.sum(branch_mask), min=1.0)
-        
+        loss_br = torch.sum(diff**2) / torch.clamp(torch.sum(branch_mask), min=1.0)
+
         loss_top = torch.tensor(0.0, device=device)
         if pred_top is not None:
             # y_top is one-hot.
             target_classes = torch.argmax(y_top, dim=1)
             loss_top = torch.nn.functional.cross_entropy(pred_top, target_classes)
-            
+
         loss = loss_br + topology_weight * loss_top
-        
+
         # Check for negative predictions for warning (on unmasked branches)
         with torch.no_grad():
             actual_outputs = transformer.inverse_tensor(pred_br.detach())
@@ -308,19 +308,19 @@ def _evaluate(
         y_br = y_br.to(device, non_blocking=True)
         branch_mask = branch_mask.to(device, non_blocking=True)
         y_top = y_top.to(device, non_blocking=True)
-        
+
         pred_br, pred_top = model(features)
-        
+
         diff = (pred_br - y_br) * branch_mask
-        loss_br = torch.sum(diff ** 2) / torch.clamp(torch.sum(branch_mask), min=1.0)
-        
+        loss_br = torch.sum(diff**2) / torch.clamp(torch.sum(branch_mask), min=1.0)
+
         loss_top = torch.tensor(0.0, device=device)
         if pred_top is not None:
             target_classes = torch.argmax(y_top, dim=1)
             loss_top = torch.nn.functional.cross_entropy(pred_top, target_classes)
-            
+
         loss = loss_br + topology_weight * loss_top
-        
+
         batch_size = features.size(0)
         running_loss += loss.item() * batch_size
         total_samples += batch_size
@@ -340,26 +340,26 @@ def _collect_predictions(
     preds_top: list[np.ndarray] = []
     trues_top: list[np.ndarray] = []
     masks: list[np.ndarray] = []
-    
+
     model.eval()
     for features, y_br, branch_mask, y_top in loader:
         features = features.to(device, non_blocking=True)
         pred_br, pred_top = model(features)
-        
+
         actual_preds = transformer.inverse_tensor(pred_br).cpu().numpy()
         actual_targets = transformer.inverse_tensor(y_br).cpu().numpy()
-        
+
         preds_br.append(actual_preds)
         trues_br.append(actual_targets)
         masks.append(branch_mask.cpu().numpy())
-        
+
         if pred_top is not None:
             preds_top.append(torch.softmax(pred_top, dim=1).cpu().numpy())
             trues_top.append(y_top.cpu().numpy())
-            
+
     if not preds_top:
         return np.vstack(preds_br), np.vstack(trues_br), np.vstack(masks), np.array([]), np.array([])
-        
+
     return np.vstack(preds_br), np.vstack(trues_br), np.vstack(masks), np.vstack(preds_top), np.vstack(trues_top)
 
 
@@ -425,12 +425,7 @@ def _plot_branch_pair_high_def(
         return
 
     cutoff = min_val + fraction * span
-    branch_mask = (
-        np.isfinite(true_vals)
-        & np.isfinite(pred_vals)
-        & (true_vals <= cutoff)
-        & (pred_vals <= cutoff)
-    )
+    branch_mask = np.isfinite(true_vals) & np.isfinite(pred_vals) & (true_vals <= cutoff) & (pred_vals <= cutoff)
     if not np.any(branch_mask):
         return
 
@@ -502,8 +497,12 @@ class CNNTrainer:
             torch.cuda.manual_seed_all(data_cfg.seed)
 
         dataset = np.load(data_cfg.dataset_file, mmap_mode="r")
-        if dataset.dtype.names is None or {"X", "y_br", "branch_mask", "y_top", "tree_index"} - set(dataset.dtype.names):
-            raise ValueError("Dataset does not contain the expected structured fields (X, y_br, branch_mask, y_top, tree_index)")
+        if dataset.dtype.names is None or {"X", "y_br", "branch_mask", "y_top", "tree_index"} - set(
+            dataset.dtype.names
+        ):
+            raise ValueError(
+                "Dataset does not contain the expected structured fields (X, y_br, branch_mask, y_top, tree_index)"
+            )
 
         example = dataset[0]
         if example["X"].ndim != 3:
@@ -532,7 +531,7 @@ class CNNTrainer:
                 f"{configured_outputs} != {target_width}"
             )
         effective_outputs = configured_outputs or target_width
-        
+
         num_topology_classes = y_top.shape[1]
 
         transformed_y_br = self.transformer.transform_numpy(raw_y_br)
@@ -584,11 +583,13 @@ class CNNTrainer:
         epochs_without_improvement = 0
         train_losses: list[float] = []
         val_losses: list[float] = []
-        
+
         topology_weight = self.config.model.topology_weight
 
         for epoch in range(1, trainer_cfg.epochs + 1):
-            train_loss = _train_epoch(model, train_loader, criterion, optimizer, self.device, self.transformer, topology_weight)
+            train_loss = _train_epoch(
+                model, train_loader, criterion, optimizer, self.device, self.transformer, topology_weight
+            )
             val_loss = _evaluate(model, val_loader, criterion, self.device, self.transformer, topology_weight)
 
             train_losses.append(train_loss)
@@ -601,9 +602,7 @@ class CNNTrainer:
             else:
                 epochs_without_improvement += 1
 
-            print(
-                f"Epoch {epoch:02d}/{trainer_cfg.epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}"
-            )
+            print(f"Epoch {epoch:02d}/{trainer_cfg.epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
 
             if epochs_without_improvement >= trainer_cfg.patience:
                 print(
@@ -624,12 +623,14 @@ class CNNTrainer:
 
         branch_plot_folder = self.config.outputs.branch_plot_dir
         branch_plot_folder.mkdir(parents=True, exist_ok=True)
-        
+
         # Always generate loss curve
         _plot_loss_curve(train_losses, val_losses, branch_plot_folder / "loss_curve.png")
-        
-        pred_br, true_br, masks, pred_top, true_top = _collect_predictions(model, test_loader, self.device, self.transformer)
-        
+
+        pred_br, true_br, masks, pred_top, true_top = _collect_predictions(
+            model, test_loader, self.device, self.transformer
+        )
+
         # Always iterate branches for metrics; plot conditionally
         for idx in range(pred_br.shape[1]):
             mask = masks[:, idx].astype(bool)
@@ -662,7 +663,7 @@ class CNNTrainer:
                     r2=metrics["r2"],
                 )
             )
-        
+
         # Generate branch sum plot if enabled
         if self.config.outputs.branch_sum_plots:
             # Sum all branches (masked)
@@ -679,31 +680,33 @@ class CNNTrainer:
         flat_true = true_br[masks.astype(bool)]
         flat_pred = pred_br[masks.astype(bool)]
         metrics = _summarize_branch_metrics(flat_true, flat_pred)
-        print("Overall Branch Sum Metrics \t | MAE: {mae:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
-            mae=metrics["mae"],
-            rmse=metrics["rmse"],
-            r2=metrics["r2"],
-        ))
-        print("\n" + "="*60 + "\n")
-        
+        print(
+            "Overall Branch Sum Metrics \t | MAE: {mae:.4f} | RMSE: {rmse:.4f} | R2: {r2:.4f}".format(
+                mae=metrics["mae"],
+                rmse=metrics["rmse"],
+                r2=metrics["r2"],
+            )
+        )
+        print("\n" + "=" * 60 + "\n")
+
         # Topology classification metrics (if enabled)
         if self.config.model.topology_classification and pred_top.size > 0:
-            print("\n" + "="*60)
+            print("\n" + "=" * 60)
             print("TOPOLOGY CLASSIFICATION RESULTS")
-            print("="*60)
-            
+            print("=" * 60)
+
             pred_classes = np.argmax(pred_top, axis=1)
             true_classes = np.argmax(true_top, axis=1)
-            
+
             # Accuracy
             acc = np.mean(pred_classes == true_classes)
             print(f"\nAccuracy: {acc:.4f}")
-            
+
             # Confusion Matrix
             cm = confusion_matrix(true_classes, pred_classes)
             print("\nConfusion Matrix:")
             print(cm)
-            
+
             # Precision, Recall, F1-Score
             precision, recall, f1, support = precision_recall_fscore_support(
                 true_classes, pred_classes, average=None, zero_division=0
@@ -714,7 +717,7 @@ class CNNTrainer:
                     f"  Class {i}: Precision={precision[i]:.4f}, "
                     f"Recall={recall[i]:.4f}, F1={f1[i]:.4f}, Support={support[i]}"
                 )
-            
+
             # Macro averages
             macro_precision = np.mean(precision)
             macro_recall = np.mean(recall)
@@ -723,7 +726,7 @@ class CNNTrainer:
             print(f"  Precision: {macro_precision:.4f}")
             print(f"  Recall: {macro_recall:.4f}")
             print(f"  F1-Score: {macro_f1:.4f}")
-            
+
             # Weighted averages
             weighted_precision = np.average(precision, weights=support)
             weighted_recall = np.average(recall, weights=support)
@@ -732,7 +735,7 @@ class CNNTrainer:
             print(f"  Precision: {weighted_precision:.4f}")
             print(f"  Recall: {weighted_recall:.4f}")
             print(f"  F1-Score: {weighted_f1:.4f}")
-            print("="*60 + "\n")
+            print("=" * 60 + "\n")
 
         elapsed = time.time() - start_time
         print(f"TOTAL RUNTIME: {elapsed:.2f} seconds\n")

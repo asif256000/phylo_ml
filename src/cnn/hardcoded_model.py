@@ -3,9 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from src.configuration.training import ModelSettings
 from src.utils import format_tuple, infer_num_outputs
-
-from .config import ModelSettings
 
 
 class CNNModel(nn.Module):
@@ -67,11 +66,13 @@ class CNNModel(nn.Module):
                 stride=spec["stride"],
                 padding=spec["padding"],
             )
-            block = nn.ModuleDict({
-                "conv": conv,
-                "activation": spec["activation"],
-                "pool": spec["pool"],
-            })
+            block = nn.ModuleDict(
+                {
+                    "conv": conv,
+                    "activation": spec["activation"],
+                    "pool": spec["pool"],
+                }
+            )
             self.conv_layers.append(block)
             in_ch = spec["out_channels"]
 
@@ -89,11 +90,13 @@ class CNNModel(nn.Module):
             linear = nn.Linear(in_features, spec["out_features"])
             activation = spec["activation"]
             dropout_module: nn.Module = nn.Dropout(spec["dropout"]) if spec["dropout"] > 0 else nn.Identity()
-            block = nn.ModuleDict({
-                "linear": linear,
-                "activation": activation,
-                "dropout": dropout_module,
-            })
+            block = nn.ModuleDict(
+                {
+                    "linear": linear,
+                    "activation": activation,
+                    "dropout": dropout_module,
+                }
+            )
             self.linear_layers.append(block)
             in_features = spec["out_features"]
 
@@ -172,9 +175,7 @@ class CNNModel(nn.Module):
     def __str__(self) -> str:
         lines: list[str] = []
         lines.append("Hardcoded CNNModel architecture:")
-        lines.append(
-            f"  Inputs: in_channels={self.in_channels}, num_taxa={self.num_taxa}, rooted={self.tree_rooted}"
-        )
+        lines.append(f"  Inputs: in_channels={self.in_channels}, num_taxa={self.num_taxa}, rooted={self.tree_rooted}")
         lines.append(f"  Label transform: {self.label_transform_strategy}")
         lines.append(f"  Outputs: num_outputs={self.num_outputs}")
         lines.append("  Convolutional Layers:")

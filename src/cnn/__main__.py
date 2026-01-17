@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .config import ConfigurationError, load_training_config
+from src.configuration.training import ConfigurationError, load_training_config
+
 from .trainer import CNNTrainer
 
 

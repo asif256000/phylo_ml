@@ -1,25 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
-from typing import Any
 
-import yaml
-
-from . import build_config_from_mapping, run_training
-
-
-def _load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-    text = path.read_text()
-    suffix = path.suffix.lower()
-    if suffix in {".yaml", ".yml"}:
-        return yaml.safe_load(text)
-    if suffix == ".json":
-        return json.loads(text)
-    raise ValueError("Config must be YAML or JSON")
+from . import run_training
+from .config import ConfigurationError, load_training_config
 
 
 def main() -> None:
@@ -32,9 +17,11 @@ def main() -> None:
         help="Path to YAML/JSON training config (default: config/training.yaml)",
     )
     args = parser.parse_args()
+    try:
+        cfg = load_training_config(args.config)
+    except (FileNotFoundError, ConfigurationError, ValueError) as exc:
+        raise SystemExit(f"Failed to load training configuration: {exc}") from exc
 
-    payload = _load_config(args.config)
-    cfg = build_config_from_mapping(payload)
     run_training(cfg)
 
 

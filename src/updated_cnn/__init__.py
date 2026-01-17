@@ -1,19 +1,13 @@
 """Updated CNN module for regression-only training."""
 
+from .config import TrainingConfig
 from .model import CNNModel
-from .train import (
-    Trainer,
-    TrainingConfig,
-    TrainingResult,
-    build_config_from_mapping,
-    run_training,
-)
+from .train import Trainer, TrainingResult, run_training
 
 __all__ = [
     "CNNModel",
     "Trainer",
     "TrainingConfig",
     "TrainingResult",
-    "build_config_from_mapping",
     "run_training",
 ]

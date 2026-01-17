@@ -3,6 +3,7 @@
 **.png
 **.txt
 **.out
+**.egg-info
 bkp_**
 phylo_*.sh
 .vscode

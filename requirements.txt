@@ -5,3 +5,4 @@ pytest
 matplotlib
 pyyaml
 torchinfo
+pykan

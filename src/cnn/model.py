@@ -3,10 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from src.configuration.training import ModelSettings, PoolingSettings
 from src.utils import format_tuple, infer_num_outputs
-
-from .config import ModelSettings, PoolingSettings
-
 
 _ACTIVATIONS = {
     "relu": nn.ReLU,
@@ -112,11 +110,13 @@ class CNNModel(nn.Module):
             activation = _build_activation(layer_cfg.activation)
             pooling = _build_pooling(layer_cfg.pool)
 
-            block = nn.ModuleDict({
-                "conv": conv,
-                "activation": activation,
-                "pool": pooling,
-            })
+            block = nn.ModuleDict(
+                {
+                    "conv": conv,
+                    "activation": activation,
+                    "pool": pooling,
+                }
+            )
             self.conv_layers.append(block)
             in_channels = layer_cfg.out_channels
 
@@ -130,16 +130,18 @@ class CNNModel(nn.Module):
             activation = _build_activation(layer_cfg.activation)
             dropout_module: nn.Module = nn.Dropout(layer_cfg.dropout) if layer_cfg.dropout > 0 else nn.Identity()
 
-            block = nn.ModuleDict({
-                "linear": linear,
-                "activation": activation,
-                "dropout": dropout_module,
-            })
+            block = nn.ModuleDict(
+                {
+                    "linear": linear,
+                    "activation": activation,
+                    "dropout": dropout_module,
+                }
+            )
             self.linear_layers.append(block)
             in_features = layer_cfg.out_features
 
         self.output_layer = nn.Linear(in_features, num_outputs)
-        
+
         if self.topology_classification:
             if num_topology_classes is None or num_topology_classes <= 0:
                 raise ValueError("num_topology_classes must be positive when topology_classification is enabled")
@@ -154,7 +156,11 @@ class CNNModel(nn.Module):
             conv = block["conv"]
             activation = block["activation"]
             pool = block["pool"]
-            if not isinstance(conv, nn.Conv2d) or not isinstance(activation, nn.Module) or not isinstance(pool, nn.Module):
+            if (
+                not isinstance(conv, nn.Conv2d)
+                or not isinstance(activation, nn.Module)
+                or not isinstance(pool, nn.Module)
+            ):
                 raise RuntimeError("Malformed convolutional block configuration")
             x = conv(x)
             x = activation(x)
@@ -169,7 +175,11 @@ class CNNModel(nn.Module):
             linear = block["linear"]
             activation = block["activation"]
             dropout = block["dropout"]
-            if not isinstance(linear, nn.Linear) or not isinstance(activation, nn.Module) or not isinstance(dropout, nn.Module):
+            if (
+                not isinstance(linear, nn.Linear)
+                or not isinstance(activation, nn.Module)
+                or not isinstance(dropout, nn.Module)
+            ):
                 raise RuntimeError("Malformed linear block configuration")
             x = linear(x)
             x = activation(x)
@@ -218,7 +228,11 @@ class CNNModel(nn.Module):
             conv = block["conv"]
             pool = block["pool"]
             activation = block["activation"]
-            if not isinstance(conv, nn.Conv2d) or not isinstance(pool, nn.Module) or not isinstance(activation, nn.Module):
+            if (
+                not isinstance(conv, nn.Conv2d)
+                or not isinstance(pool, nn.Module)
+                or not isinstance(activation, nn.Module)
+            ):
                 raise RuntimeError("Malformed convolutional block configuration")
             lines.append(
                 "    conv{idx}: Conv2d(in_channels={in_c}, out_channels={out_c}, kernel_size={kernel}, stride={stride}, padding={padding})".format(
@@ -247,9 +261,7 @@ class CNNModel(nn.Module):
             else:
                 lines.append("      pool: Identity")
 
-        lines.append(
-            f"  Global pooling: {self.global_pool.__class__.__name__}"
-        )
+        lines.append(f"  Global pooling: {self.global_pool.__class__.__name__}")
 
         lines.append("  Linear Blocks:")
         for idx, block in enumerate(self.linear_layers, start=1):
@@ -258,7 +270,11 @@ class CNNModel(nn.Module):
             linear = block["linear"]
             activation = block["activation"]
             dropout = block["dropout"]
-            if not isinstance(linear, nn.Linear) or not isinstance(activation, nn.Module) or not isinstance(dropout, nn.Module):
+            if (
+                not isinstance(linear, nn.Linear)
+                or not isinstance(activation, nn.Module)
+                or not isinstance(dropout, nn.Module)
+            ):
                 raise RuntimeError("Malformed linear block configuration")
             lines.append(
                 "    linear{idx}: Linear(in_features={in_f}, out_features={out_f})".format(

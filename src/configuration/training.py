@@ -10,7 +10,7 @@ import yaml
 
 
 class ConfigurationError(RuntimeError):
-    """Raised when a CNN training configuration cannot be parsed or validated."""
+    """Raised when a training configuration cannot be parsed or validated."""
 
 
 _ALLOWED_ACTIVATIONS = {"relu", "gelu", "elu", "identity"}
@@ -84,7 +84,7 @@ class KANSettings:
 
 @dataclass(frozen=True)
 class ModelSettings:
-    """Definition of the CNN architecture hyperparameters."""
+    """Definition of architecture hyperparameters."""
 
     in_channels: int
     conv_layers: tuple[ConvLayerSettings, ...]
@@ -95,7 +95,6 @@ class ModelSettings:
     rooted: bool = True
     topology_classification: bool = False
     topology_weight: float = 1.0
-    kind: str = "cnn"
     kan_settings: KANSettings | None = None
 
 
@@ -133,7 +132,7 @@ class OutputSettings:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Aggregated training configuration for the CNN pipeline."""
+    """Aggregated training configuration for phylogenetic models."""
 
     seed: int
     data: DataSettings
@@ -167,7 +166,7 @@ class TrainingConfig:
 
 
 def load_training_config(path: str | Path) -> TrainingConfig:
-    """Load the CNN training configuration from a YAML or JSON file."""
+    """Load a training configuration from a YAML or JSON file."""
 
     config_path = Path(path)
     if not config_path.exists():
@@ -201,7 +200,6 @@ def _parse_data_settings(payload: Mapping[str, Any], base_path: Path | None) -> 
     dataset_value = data_payload.get("dataset_file") or payload.get("dataset_file")
     if dataset_value is None:
         raise ConfigurationError("'data.dataset_file' must be provided")
-    # Read dataset path as provided, without resolving relative to workspace
     dataset_path = Path(str(dataset_value)).expanduser()
 
     batch_size = int(data_payload.get("batch_size", 32))
@@ -264,8 +262,6 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
     if not isinstance(model_payload, Mapping):
         raise ConfigurationError("'model' section must be a mapping")
 
-    kind = str(model_payload.get("type", model_payload.get("kind", "cnn"))).lower()
-
     cnn_payload = model_payload.get("cnn", {})
     if cnn_payload and not isinstance(cnn_payload, Mapping):
         raise ConfigurationError("'model.cnn' section must be a mapping when provided")
@@ -313,18 +309,16 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
         )
 
     num_outputs = model_payload.get("num_outputs")
-    num_outputs_value: int | None
     if num_outputs is None:
-        num_outputs_value = None
+        num_outputs_value: int | None = None
     else:
         num_outputs_value = int(num_outputs)
         if num_outputs_value <= 0:
             raise ConfigurationError("'model.num_outputs' must be positive when provided")
 
     num_taxa = model_payload.get("num_taxa")
-    num_taxa_value: int | None
     if num_taxa is None:
-        num_taxa_value = None
+        num_taxa_value: int | None = None
     else:
         num_taxa_value = int(num_taxa)
         if num_taxa_value <= 0:
@@ -349,7 +343,6 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
         rooted=rooted,
         topology_classification=topology_classification,
         topology_weight=topology_weight,
-        kind=kind,
         kan_settings=kan_settings,
     )
 
@@ -362,7 +355,6 @@ def _parse_output_settings(
         raise ConfigurationError("'outputs' section must be a mapping")
 
     branch_plot_dir_value = output_payload.get("branch_plot_dir", "branch_plots")
-    # Read branch plot directory as provided, without resolving relative to workspace
     branch_plot_dir = Path(str(branch_plot_dir_value)).expanduser()
     zoomed_plots = bool(output_payload.get("zoomed_plots", False))
     individual_branch_plots = bool(output_payload.get("individual_branch_plots", False))

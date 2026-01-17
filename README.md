@@ -1,42 +1,56 @@
 # Phylogenetic ML Models
 
-Repository for phylogenetic machine learning models. Data simulation and XML parsing have been removed; bring your own prepared datasets. The current module implements a convolutional neural network for branch-length prediction.
+This project provides two phylogenetic branch-length regressors: a configurable convolutional neural network (CNN) and a Kolmogorov-Arnold Network (KAN). Bring prepared sequence datasets (`.npy` files) to train either architecture.
 
 ## Setup
 
-- **Python:** 3.10 or newer.
-- **Environment:** create and activate a virtual environment (Conda, `venv`, etc.).
-- **Install:**
+- Python 3.10+
+- Create and activate a preferred virtual environment (pyenv, Conda, `venv`, etc.)
+- Install dependencies:
 
   ```bash
   pip install -r requirements.txt
   ```
 
-## Training (CNN module)
+## Configuration
 
-The CNN trainer consumes a NumPy `.npy` dataset containing encoded sequences and branch-length targets. Point the `data.dataset_file` field in a training config to your prepared file, then launch training:
+Training configurations share a common schema with model-specific sub-sections. Key fields:
+
+- Common model keys: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight`.
+- `model.cnn`: convolution blocks, linear layers, global pooling, and related CNN hyperparameters.
+- `model.kan`: hidden layer widths, spline/grid parameters, regularisation toggles, and other KAN options.
+- `data`, `trainer`, `label_transform`, `outputs`: dataset location, training schedule, label transforms, and artifact directories.
+
+Sample configurations live in `sample_config/training.yaml` and `sample_config/training.json`.
+
+## Training
+
+### CNN workflow
+
+The CNN trainer expects structured NumPy records with encoded sequences (`X`), branch-length targets (`y_br`), optional topology labels (`y_top`), and masks. Populate the `model.cnn` block and launch training:
 
 ```bash
 python -m src.cnn --config path/to/training.yaml
 ```
 
-Reference configs live in `sample_config/training.yaml` and `sample_config/training.json`. Key sections:
+If `model.topology_classification` is enabled, the trainer uses the additional topology targets for multi-task learning.
 
-- `data`: dataset path, batch size, worker count, and split ratios.
-- `trainer`: epochs, patience, learning rate, weight decay.
-- `model`: convolutional/linear layers plus optional topology classification head.
-- `label_transform`: `sqrt` (default) or `log` transform for branch-length targets.
-- `outputs`: directory for diagnostic plots.
+### KAN workflow
+
+The KAN trainer flattens the same dataset format and optimises a Kolmogorov-Arnold Network via `pykan`. Populate the `model.kan` block and run:
+
+```bash
+python -m src.kan --config path/to/training.yaml
+```
+
+KAN training is focused on branch-length regression; topology classification must remain disabled.
 
 ## Testing
 
-Run the remaining model-focused tests with:
+Execute the automated checks with:
 
 ```bash
 pytest
 ```
 
-Suites:
-
-- `tests/test_model.py`: CNN architecture and forward-pass coverage.
-- `tests/test_train.py`: data splitting, label transforms, and trainer checks.
+Test suites cover CNN architecture behaviours (`tests/test_model.py`) and data splitting plus trainer invariants (`tests/test_train.py`).
