@@ -728,7 +728,6 @@ class Trainer:
                 )
             )
 
-        print(f"Results saved to: {results_dir}")
         print(f"Total runtime: {runtime:.2f} seconds")
 
         # Compose training status string
