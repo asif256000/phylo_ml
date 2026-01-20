@@ -16,8 +16,7 @@ This project provides two phylogenetic branch-length regressors: a CNN and a Kol
 
 Training configurations share a common schema with model-specific sub-sections. Key fields:
 
-- Common model keys: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight`.
-- `model`: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight` (used by updated CNN/KAN where applicable).
+- `model`: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight` (used by CNN/KAN where applicable).
 - `model.kan`: hidden layer widths, spline/grid parameters, regularisation toggles, and other KAN options.
 - `data`, `trainer`, `label_transform`, `outputs`: dataset location, training schedule, label transforms, and output directories (`outputs.results_dir`).
 
@@ -25,12 +24,12 @@ Sample configurations live in `sample_config/training.yaml` and `sample_config/t
 
 ## Training
 
-### Updated CNN workflow
+### CNN workflow
 
-The updated CNN trainer expects structured NumPy records with encoded sequences (`X`) and branch-length targets (`y_br`). Populate the common `model` fields and launch training:
+The CNN trainer expects structured NumPy records with encoded sequences (`X`) and branch-length targets (`y_br`). Populate the common `model` fields and launch training:
 
 ```bash
-python -m src.updated_cnn --config path/to/training.yaml
+python -m src.cnn --config path/to/training.yaml
 ```
 
 Topology classification targets are not used by the CNN.
