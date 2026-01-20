@@ -532,6 +532,7 @@ class Trainer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(cfg.seed)
 
+        print(f"DATASET FILE: {data_cfg.dataset_file}")
         dataset = np.load(data_cfg.dataset_file, mmap_mode="r")
         expected_fields = {"X", "y_br"}
         if dataset.dtype.names is None or expected_fields - set(dataset.dtype.names):
@@ -647,9 +648,9 @@ class Trainer:
         )
         print("=" * 60 + "\n")
 
-        base_results_dir = outputs_cfg.branch_plot_dir.expanduser().resolve()
-        results_dir = _get_next_results_dir(base_results_dir)
+        results_dir = outputs_cfg.results_dir.expanduser().resolve()
         results_dir.mkdir(parents=True, exist_ok=True)
+        print(f"RESULTS DIR: {results_dir}")
         plots_dir = results_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
 
