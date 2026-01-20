@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-from src.cnn.trainer import CNNTrainer, LabelTransformer, split_indices
 from src.configuration.training import TrainingConfig
+from src.updated_cnn.train import LabelTransformer, Trainer, split_indices
 
 
 def test_split_indices_small_dataset_has_all_splits():
@@ -38,7 +38,7 @@ def test_training_config_uses_absolute_paths_as_is(tmp_path):
         "data": {"dataset_file": str((data_dir / "sample.npy").resolve())},
         "trainer": {},
         "model": {},
-        "outputs": {"branch_plot_dir": str((project_root / "branch_plots/run").resolve())},
+        "outputs": {"results_dir": str((project_root / "branch_plots/run").resolve())},
     }
 
     config = TrainingConfig.from_mapping(payload, base_path=config_dir)
@@ -47,7 +47,7 @@ def test_training_config_uses_absolute_paths_as_is(tmp_path):
     expected_plots = (project_root / "branch_plots/run").resolve()
 
     assert config.data.dataset_file == expected_dataset
-    assert config.outputs.branch_plot_dir == expected_plots
+    assert config.outputs.results_dir == expected_plots
 
 
 def test_label_transform_roundtrip_sqrt():
@@ -69,17 +69,11 @@ def test_label_transform_roundtrip_log():
 def test_trainer_raises_when_num_outputs_mismatch(tmp_path):
     dataset_path = tmp_path / "dataset.npy"
     dtype = [
-        ("tree_index", np.int32),
-        ("y_br", np.float32, (3,)),
-        ("branch_mask", bool, (3,)),
-        ("y_top", np.float32, (2,)),
         ("X", np.float32, (2, 6, 4)),
+        ("y_br", np.float32, (3,)),
     ]
     data = np.zeros(2, dtype=dtype)
-    data["tree_index"] = np.arange(2)
     data["y_br"] = np.array([[0.2, 0.3, 0.4], [0.5, 0.6, 0.7]], dtype=np.float32)
-    data["branch_mask"] = True
-    data["y_top"] = np.array([[1, 0], [0, 1]], dtype=np.float32)
     data["X"] = 0.25
     np.save(dataset_path, data)
 
@@ -99,7 +93,7 @@ def test_trainer_raises_when_num_outputs_mismatch(tmp_path):
     }
 
     config = TrainingConfig.from_mapping(payload, base_path=tmp_path)
-    trainer = CNNTrainer(config)
+    trainer = Trainer(config)
 
     with pytest.raises(ValueError):
         trainer.run()
