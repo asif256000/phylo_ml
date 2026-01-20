@@ -1,10 +1,7 @@
-from pathlib import Path
-
 import torch
 import torch.nn as nn
 
-from src.cnn.model import CNNModel
-from src.configuration.training import TrainingConfig
+from src.updated_cnn.model import CNNModel
 
 
 def test_model_forward_pass_output_shape():
@@ -12,20 +9,18 @@ def test_model_forward_pass_output_shape():
     num_taxa = 2
     seq_length = 1000
     num_outputs = 3
+    in_channels = 4
 
-    dummy_input = torch.randn(batch_size, 4, num_taxa, seq_length)
-    training_config = TrainingConfig.from_mapping(
-        {"data": {"dataset_file": "dummy.npy"}},
-        base_path=Path.cwd(),
-    )
-    model = CNNModel.from_config(
-        training_config.model,
+    dummy_input = torch.randn(batch_size, in_channels, num_taxa, seq_length)
+    model = CNNModel(
         num_taxa=num_taxa,
         num_outputs=num_outputs,
-        label_transform=training_config.label_transform.strategy,
+        in_channels=in_channels,
+        label_transform="sqrt",
+        tree_rooted=True,
     )
 
-    output, _ = model(dummy_input)
+    output = model(dummy_input)
 
     assert output.shape == (batch_size, num_outputs)
 
@@ -33,47 +28,40 @@ def test_model_forward_pass_output_shape():
 def test_model_layer_configuration():
     num_taxa = 2
     seq_length = 1000
-    training_config = TrainingConfig.from_mapping(
-        {"data": {"dataset_file": "dummy.npy"}},
-        base_path=Path.cwd(),
-    )
-    model = CNNModel.from_config(
-        training_config.model,
+    model = CNNModel(
         num_taxa=num_taxa,
         num_outputs=3,
-        label_transform=training_config.label_transform.strategy,
+        in_channels=4,
+        label_transform="sqrt",
+        tree_rooted=True,
     )
 
-    first_block = model.conv_layers[0]
-    conv1 = first_block["conv"]
-    assert conv1.kernel_size == (2, 1)
-    assert conv1.stride == (1, 1)
+    conv1 = model.conv1
+    assert conv1.kernel_size == (num_taxa, 1)
+    assert conv1.stride == (num_taxa, 1)
     assert conv1.padding == (0, 0)
-    assert isinstance(first_block["pool"], nn.Identity)
+    assert isinstance(model.pool1, nn.Identity)
 
-    second_block = model.conv_layers[1]
-    conv2 = second_block["conv"]
+    conv2 = model.conv2
     assert conv2.kernel_size == (1, 3)
     assert conv2.stride == (1, 1)
-    assert conv2.padding == (0, 1)
+    assert conv2.padding == (0, 0)
+    assert isinstance(model.pool2, nn.AvgPool2d)
 
     # Forward a single example to ensure pooling and fully connected layers are wired correctly
     dummy_input = torch.randn(1, 4, num_taxa, seq_length)
-    output, _ = model(dummy_input)
+    output = model(dummy_input)
     assert output.shape == (1, 3)
 
 
 def test_model_string_representation_includes_layers():
     num_taxa = 2
-    training_config = TrainingConfig.from_mapping(
-        {"data": {"dataset_file": "dummy.npy"}},
-        base_path=Path.cwd(),
-    )
-    model = CNNModel.from_config(
-        training_config.model,
+    model = CNNModel(
         num_taxa=num_taxa,
         num_outputs=3,
-        label_transform=training_config.label_transform.strategy,
+        in_channels=4,
+        label_transform="sqrt",
+        tree_rooted=True,
     )
 
     description = str(model)
