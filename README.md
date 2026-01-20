@@ -1,6 +1,6 @@
 # Phylogenetic ML Models
 
-This project provides two phylogenetic branch-length regressors: a configurable convolutional neural network (CNN) and a Kolmogorov-Arnold Network (KAN). Bring prepared sequence datasets (`.npy` files) to train either architecture.
+This project provides two phylogenetic branch-length regressors: a CNN and a Kolmogorov-Arnold Network (KAN). Bring prepared sequence datasets (`.npy` files) to train either architecture.
 
 ## Setup
 
@@ -17,23 +17,23 @@ This project provides two phylogenetic branch-length regressors: a configurable 
 Training configurations share a common schema with model-specific sub-sections. Key fields:
 
 - Common model keys: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight`.
-- `model.cnn`: convolution blocks, linear layers, global pooling, and related CNN hyperparameters.
+- `model`: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight` (used by updated CNN/KAN where applicable).
 - `model.kan`: hidden layer widths, spline/grid parameters, regularisation toggles, and other KAN options.
-- `data`, `trainer`, `label_transform`, `outputs`: dataset location, training schedule, label transforms, and artifact directories.
+- `data`, `trainer`, `label_transform`, `outputs`: dataset location, training schedule, label transforms, and output directories (`outputs.results_dir`).
 
 Sample configurations live in `sample_config/training.yaml` and `sample_config/training.json`.
 
 ## Training
 
-### CNN workflow
+### Updated CNN workflow
 
-The CNN trainer expects structured NumPy records with encoded sequences (`X`), branch-length targets (`y_br`), optional topology labels (`y_top`), and masks. Populate the `model.cnn` block and launch training:
+The updated CNN trainer expects structured NumPy records with encoded sequences (`X`) and branch-length targets (`y_br`). Populate the common `model` fields and launch training:
 
 ```bash
-python -m src.cnn --config path/to/training.yaml
+python -m src.updated_cnn --config path/to/training.yaml
 ```
 
-If `model.topology_classification` is enabled, the trainer uses the additional topology targets for multi-task learning.
+Topology classification targets are not used by the CNN.
 
 ### KAN workflow
 
