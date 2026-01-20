@@ -13,9 +13,6 @@ class ConfigurationError(RuntimeError):
     """Raised when a training configuration cannot be parsed or validated."""
 
 
-_ALLOWED_ACTIVATIONS = {"relu", "gelu", "elu", "identity"}
-_ALLOWED_GLOBAL_POOLS = {"adaptive_avg", "adaptive_max", "identity"}
-_ALLOWED_POOL_KINDS = {"identity", "max", "avg"}
 _ALLOWED_LABEL_TRANSFORMS = {"sqrt", "log"}
 
 
@@ -30,36 +27,6 @@ class LabelTransformSettings:
             raise ConfigurationError(
                 f"'label_transform.strategy' must be one of {_ALLOWED_LABEL_TRANSFORMS}, received '{self.strategy}'"
             )
-
-
-@dataclass(frozen=True)
-class PoolingSettings:
-    """Configuration for an optional pooling layer following a convolution."""
-
-    kind: str = "identity"
-    kernel_size: tuple[int, int] | None = None
-    stride: tuple[int, int] | None = None
-
-
-@dataclass(frozen=True)
-class ConvLayerSettings:
-    """Settings describing a single convolutional block."""
-
-    out_channels: int
-    kernel_size: tuple[int, int]
-    stride: tuple[int, int] = (1, 1)
-    padding: tuple[int, int] = (0, 0)
-    activation: str = "relu"
-    pool: PoolingSettings = field(default_factory=PoolingSettings)
-
-
-@dataclass(frozen=True)
-class LinearLayerSettings:
-    """Settings describing a fully connected block before the output layer."""
-
-    out_features: int
-    activation: str = "relu"
-    dropout: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -87,9 +54,6 @@ class ModelSettings:
     """Definition of architecture hyperparameters."""
 
     in_channels: int
-    conv_layers: tuple[ConvLayerSettings, ...]
-    linear_layers: tuple[LinearLayerSettings, ...]
-    global_pool: str
     num_outputs: int | None = None
     num_taxa: int | None = None
     rooted: bool = True
@@ -124,7 +88,7 @@ class TrainerSettings:
 class OutputSettings:
     """Configuration for artefacts produced during training."""
 
-    branch_plot_dir: Path
+    results_dir: Path
     zoomed_plots: bool = False
     individual_branch_plots: bool = False
     branch_sum_plots: bool = False
@@ -262,51 +226,22 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
     if not isinstance(model_payload, Mapping):
         raise ConfigurationError("'model' section must be a mapping")
 
-    cnn_payload = model_payload.get("cnn", {})
-    if cnn_payload and not isinstance(cnn_payload, Mapping):
-        raise ConfigurationError("'model.cnn' section must be a mapping when provided")
+    if "cnn" in model_payload:
+        raise ConfigurationError("'model.cnn' is no longer supported; remove CNN-specific configuration")
+
+    unsupported_keys = {"conv_layers", "linear_layers", "global_pool"}
+    for key in unsupported_keys:
+        if key in model_payload:
+            raise ConfigurationError(f"'model.{key}' is no longer supported; remove CNN-specific configuration")
 
     kan_payload = model_payload.get("kan")
     if kan_payload is not None and not isinstance(kan_payload, Mapping):
         raise ConfigurationError("'model.kan' section must be a mapping when provided")
 
     in_channels_candidate = model_payload.get("in_channels")
-    if in_channels_candidate is None and isinstance(cnn_payload, Mapping):
-        in_channels_candidate = cnn_payload.get("in_channels")
     in_channels = int(in_channels_candidate if in_channels_candidate is not None else 4)
     if in_channels <= 0:
         raise ConfigurationError("'model.in_channels' must be positive")
-
-    conv_layers_payload = None
-    if isinstance(cnn_payload, Mapping):
-        conv_layers_payload = cnn_payload.get("conv_layers")
-    if conv_layers_payload is None:
-        conv_layers_payload = model_payload.get("conv_layers")
-    if conv_layers_payload is None:
-        conv_layers = _default_conv_layers()
-    else:
-        conv_layers = _parse_conv_layers(conv_layers_payload)
-
-    linear_layers_payload = None
-    if isinstance(cnn_payload, Mapping):
-        linear_layers_payload = cnn_payload.get("linear_layers")
-    if linear_layers_payload is None:
-        linear_layers_payload = model_payload.get("linear_layers")
-    if linear_layers_payload is None:
-        linear_layers = _default_linear_layers()
-    else:
-        linear_layers = _parse_linear_layers(linear_layers_payload)
-
-    global_pool_candidate = None
-    if isinstance(cnn_payload, Mapping):
-        global_pool_candidate = cnn_payload.get("global_pool")
-    if global_pool_candidate is None:
-        global_pool_candidate = model_payload.get("global_pool", "adaptive_avg")
-    global_pool = str(global_pool_candidate).lower()
-    if global_pool not in _ALLOWED_GLOBAL_POOLS:
-        raise ConfigurationError(
-            f"'model.global_pool' must be one of {_ALLOWED_GLOBAL_POOLS}, received '{global_pool}'"
-        )
 
     num_outputs = model_payload.get("num_outputs")
     if num_outputs is None:
@@ -335,9 +270,6 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
 
     return ModelSettings(
         in_channels=in_channels,
-        conv_layers=conv_layers,
-        linear_layers=linear_layers,
-        global_pool=global_pool,
         num_outputs=num_outputs_value,
         num_taxa=num_taxa_value,
         rooted=rooted,
@@ -354,14 +286,16 @@ def _parse_output_settings(
     if not isinstance(output_payload, Mapping):
         raise ConfigurationError("'outputs' section must be a mapping")
 
-    branch_plot_dir_value = output_payload.get("branch_plot_dir", "branch_plots")
-    branch_plot_dir = Path(str(branch_plot_dir_value)).expanduser()
+    results_dir_value = output_payload.get("results_dir")
+    if results_dir_value is None:
+        results_dir_value = output_payload.get("branch_plot_dir", "branch_plots")
+    results_dir = Path(str(results_dir_value)).expanduser()
     zoomed_plots = bool(output_payload.get("zoomed_plots", False))
     individual_branch_plots = bool(output_payload.get("individual_branch_plots", False))
     branch_sum_plots = bool(output_payload.get("branch_sum_plots", False))
 
     return OutputSettings(
-        branch_plot_dir=branch_plot_dir,
+        results_dir=results_dir,
         zoomed_plots=zoomed_plots,
         individual_branch_plots=individual_branch_plots,
         branch_sum_plots=branch_sum_plots,
@@ -377,93 +311,6 @@ def _parse_label_transform(value: Any) -> LabelTransformSettings:
         return LabelTransformSettings(strategy=value.lower())
 
     raise ConfigurationError("'label_transform' must be a string or mapping with a 'strategy' key")
-
-
-def _parse_conv_layers(data: Sequence[Any]) -> tuple[ConvLayerSettings, ...]:
-    if not isinstance(data, Sequence):
-        raise ConfigurationError("'model.conv_layers' must be a sequence")
-
-    layers: list[ConvLayerSettings] = []
-    for index, entry in enumerate(data):
-        if not isinstance(entry, Mapping):
-            raise ConfigurationError("Each convolution layer definition must be a mapping")
-
-        try:
-            out_channels = int(entry["out_channels"])
-        except KeyError as exc:
-            raise ConfigurationError("Convolution layer missing 'out_channels'") from exc
-        if out_channels <= 0:
-            raise ConfigurationError("'out_channels' must be positive for every convolution layer")
-
-        kernel_size = _parse_pair(entry.get("kernel_size"), "kernel_size", required=True)
-        if kernel_size is None:
-            raise ConfigurationError("'kernel_size' must be provided for every convolution layer")
-        stride = _parse_pair(entry.get("stride"), "stride", default=(1, 1), required=False) or (1, 1)
-        padding = _parse_pair(entry.get("padding"), "padding", default=(0, 0), required=False) or (0, 0)
-
-        activation = str(entry.get("activation", "relu")).lower()
-        if activation not in _ALLOWED_ACTIVATIONS:
-            raise ConfigurationError(
-                f"Unsupported activation '{activation}' in convolution layer {index}; allowed values: {_ALLOWED_ACTIVATIONS}"
-            )
-
-        pool = _parse_pooling(entry.get("pool"))
-
-        layers.append(
-            ConvLayerSettings(
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                stride=stride,
-                padding=padding,
-                activation=activation,
-                pool=pool,
-            )
-        )
-
-    if not layers:
-        raise ConfigurationError("'model.conv_layers' must define at least one layer")
-
-    return tuple(layers)
-
-
-def _parse_linear_layers(data: Sequence[Any]) -> tuple[LinearLayerSettings, ...]:
-    if not isinstance(data, Sequence):
-        raise ConfigurationError("'model.linear_layers' must be a sequence")
-
-    layers: list[LinearLayerSettings] = []
-    for index, entry in enumerate(data):
-        if not isinstance(entry, Mapping):
-            raise ConfigurationError("Each linear layer definition must be a mapping")
-
-        try:
-            out_features = int(entry["out_features"])
-        except KeyError as exc:
-            raise ConfigurationError("Linear layer missing 'out_features'") from exc
-        if out_features <= 0:
-            raise ConfigurationError("'out_features' must be positive for every linear layer")
-
-        activation = str(entry.get("activation", "relu")).lower()
-        if activation not in _ALLOWED_ACTIVATIONS:
-            raise ConfigurationError(
-                f"Unsupported activation '{activation}' in linear layer {index}; allowed values: {_ALLOWED_ACTIVATIONS}"
-            )
-
-        dropout = float(entry.get("dropout", 0.0))
-        if dropout < 0 or dropout >= 1:
-            raise ConfigurationError("'dropout' must be in the interval [0, 1)")
-
-        layers.append(
-            LinearLayerSettings(
-                out_features=out_features,
-                activation=activation,
-                dropout=dropout,
-            )
-        )
-
-    if not layers:
-        raise ConfigurationError("'model.linear_layers' must define at least one layer")
-
-    return tuple(layers)
 
 
 def _parse_kan_settings(payload: Mapping[str, Any]) -> KANSettings:
@@ -538,54 +385,6 @@ def _parse_kan_settings(payload: Mapping[str, Any]) -> KANSettings:
     )
 
 
-def _parse_pooling(pool_payload: Any) -> PoolingSettings:
-    if pool_payload is None:
-        return PoolingSettings()
-    if isinstance(pool_payload, str):
-        kind = pool_payload.lower()
-        if kind not in _ALLOWED_POOL_KINDS:
-            raise ConfigurationError(f"Pooling kind '{kind}' is not supported; allowed values: {_ALLOWED_POOL_KINDS}")
-        return PoolingSettings(kind=kind)
-    if not isinstance(pool_payload, Mapping):
-        raise ConfigurationError("'pool' definition must be a string or mapping")
-
-    kind = str(pool_payload.get("type", pool_payload.get("kind", "identity"))).lower()
-    if kind not in _ALLOWED_POOL_KINDS:
-        raise ConfigurationError(f"Pooling kind '{kind}' is not supported; allowed values: {_ALLOWED_POOL_KINDS}")
-
-    kernel_size = _parse_pair(pool_payload.get("kernel_size"), "pool.kernel_size", required=False)
-    stride = _parse_pair(pool_payload.get("stride"), "pool.stride", required=False)
-
-    return PoolingSettings(kind=kind, kernel_size=kernel_size, stride=stride)
-
-
-def _parse_pair(
-    value: Any,
-    field_name: str,
-    default: tuple[int, int] | None = None,
-    *,
-    required: bool,
-) -> tuple[int, int] | None:
-    if value is None:
-        if required:
-            raise ConfigurationError(f"'{field_name}' must be provided")
-        return default
-
-    if isinstance(value, (int, float)):
-        int_value = int(value)
-        return (int_value, int_value)
-
-    if not isinstance(value, Sequence):
-        raise ConfigurationError(f"'{field_name}' must be a sequence of two integers")
-
-    if len(value) != 2:
-        raise ConfigurationError(f"'{field_name}' must contain exactly two integers")
-
-    first = int(value[0])
-    second = int(value[1])
-    return (first, second)
-
-
 def _resolve_path(value: Any, base_path: Path | None) -> Path:
     path = Path(str(value)).expanduser()
     if path.is_absolute():
@@ -616,29 +415,3 @@ def _discover_workspace_root(base_path: Path | None) -> Path:
     return base
 
 
-def _default_conv_layers() -> tuple[ConvLayerSettings, ...]:
-    return (
-        ConvLayerSettings(
-            out_channels=64,
-            kernel_size=(-1, 1),
-            stride=(1, 1),
-            padding=(0, 0),
-            activation="relu",
-            pool=PoolingSettings(kind="identity"),
-        ),
-        ConvLayerSettings(
-            out_channels=128,
-            kernel_size=(1, 3),
-            stride=(1, 1),
-            padding=(0, 1),
-            activation="relu",
-            pool=PoolingSettings(kind="max", kernel_size=(1, 2), stride=(1, 2)),
-        ),
-    )
-
-
-def _default_linear_layers() -> tuple[LinearLayerSettings, ...]:
-    return (
-        LinearLayerSettings(out_features=256, activation="relu", dropout=0.0),
-        LinearLayerSettings(out_features=256, activation="relu", dropout=0.2),
-    )
