@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from src.configuration.training import TrainingConfig
-from src.updated_cnn.train import LabelTransformer, Trainer, split_indices
+from src.cnn.train import LabelTransformer, Trainer, split_indices
 
 
 def test_split_indices_small_dataset_has_all_splits():

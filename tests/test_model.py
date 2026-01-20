@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from src.updated_cnn.model import CNNModel
+from src.cnn.model import CNNModel
 
 
 def test_model_forward_pass_output_shape():
