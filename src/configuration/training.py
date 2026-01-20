@@ -288,8 +288,9 @@ def _parse_output_settings(
 
     results_dir_value = output_payload.get("results_dir")
     if results_dir_value is None:
-        results_dir_value = output_payload.get("branch_plot_dir", "branch_plots")
-    results_dir = Path(str(results_dir_value)).expanduser()
+        results_dir = _default_results_dir(base_path)
+    else:
+        results_dir = Path(str(results_dir_value)).expanduser()
     zoomed_plots = bool(output_payload.get("zoomed_plots", False))
     individual_branch_plots = bool(output_payload.get("individual_branch_plots", False))
     branch_sum_plots = bool(output_payload.get("branch_sum_plots", False))
@@ -415,3 +416,31 @@ def _discover_workspace_root(base_path: Path | None) -> Path:
     return base
 
 
+def _default_results_dir(base_path: Path | None) -> Path:
+    root_dir = _discover_workspace_root(base_path)
+    base_results = root_dir / "latest_results"
+    return _next_available_results_dir(base_results)
+
+
+def _next_available_results_dir(base_path: Path) -> Path:
+    if not base_path.exists():
+        return base_path
+
+    parent = base_path.parent
+    base_name = base_path.name
+    existing_suffixes = [0]
+
+    if parent.exists():
+        for item in parent.iterdir():
+            if not item.is_dir():
+                continue
+            name = item.name
+            if name == base_name:
+                existing_suffixes.append(0)
+            elif name.startswith(base_name + "_"):
+                suffix_part = name[len(base_name) + 1 :]
+                if suffix_part.isdigit():
+                    existing_suffixes.append(int(suffix_part))
+
+    next_suffix = max(existing_suffixes) + 1
+    return parent / f"{base_name}_{next_suffix}"
