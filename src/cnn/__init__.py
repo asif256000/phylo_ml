@@ -1,4 +1,4 @@
-"""Updated CNN module for regression-only training."""
+"""CNN module for regression-only training."""
 
 from .config import TrainingConfig
 from .model import CNNModel

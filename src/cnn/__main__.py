@@ -8,7 +8,7 @@ from .config import ConfigurationError, load_training_config
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run updated CNN training (regression-only)")
+    parser = argparse.ArgumentParser(description="Run CNN training (regression-only)")
     parser.add_argument(
         "--config",
         "-c",
