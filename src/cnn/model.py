@@ -22,18 +22,24 @@ class CNNModel(nn.Module):
         in_channels: int = 4,
         label_transform: str | None = None,
         tree_rooted: bool = True,
+        topology_classification: bool = False,
+        num_topology_classes: int | None = None,
     ) -> None:
         super().__init__()
         if num_taxa <= 0:
             raise ValueError("num_taxa must be positive")
         if num_outputs <= 0:
             raise ValueError("num_outputs must be positive")
+        if topology_classification and (num_topology_classes is None or num_topology_classes <= 0):
+            raise ValueError("num_topology_classes must be positive when topology classification is enabled")
 
         self.num_taxa = num_taxa
         self.num_outputs = num_outputs
         self.in_channels = in_channels
         self.label_transform_strategy = label_transform or "none"
         self.tree_rooted = tree_rooted
+        self.topology_classification = topology_classification
+        self.num_topology_classes = num_topology_classes
 
         # Convolutional stack
         self.conv1 = nn.Conv2d(
@@ -59,25 +65,50 @@ class CNNModel(nn.Module):
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.flatten = nn.Flatten()
 
-        # Fully connected stack
-        self.fc1 = nn.Linear(64, 256)
-        self.fc1_act = nn.ReLU()
-        self.fc1_drop = nn.Identity()
+        # Regression head (MLP)
+        self.reg_fc1 = nn.Linear(64, 256)
+        self.reg_act1 = nn.ReLU()
+        self.reg_drop1 = nn.Dropout(0.1)
 
-        self.fc2 = nn.Linear(256, 256)
-        self.fc2_act = nn.ReLU()
-        self.fc2_drop = nn.Dropout(0.2)
+        self.reg_fc2 = nn.Linear(256, 128)
+        self.reg_act2 = nn.ReLU()
+        self.reg_drop2 = nn.Dropout(0.1)
 
-        self.output_layer = nn.Linear(256, num_outputs)
+        self.output_layer = nn.Linear(128, num_outputs)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Topology classification head (MLP)
+        if topology_classification and num_topology_classes is not None:
+            self.top_fc1 = nn.Linear(64, 256)
+            self.top_act1 = nn.ReLU()
+            self.top_drop1 = nn.Dropout(0.1)
+            self.top_fc2 = nn.Linear(256, 128)
+            self.top_act2 = nn.ReLU()
+            self.top_drop2 = nn.Dropout(0.1)
+            self.topology_head = nn.Linear(128, num_topology_classes)
+        else:
+            self.top_fc1 = None
+            self.top_act1 = None
+            self.top_drop1 = None
+            self.top_fc2 = None
+            self.top_act2 = None
+            self.top_drop2 = None
+            self.topology_head = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         x = self.pool1(self.act1(self.conv1(x)))
         x = self.pool2(self.act2(self.conv2(x)))
         x = self.global_pool(x)
         x = self.flatten(x)
-        x = self.fc1_drop(self.fc1_act(self.fc1(x)))
-        x = self.fc2_drop(self.fc2_act(self.fc2(x)))
-        return self.output_layer(x)
+
+        reg = self.reg_drop1(self.reg_act1(self.reg_fc1(x)))
+        reg = self.reg_drop2(self.reg_act2(self.reg_fc2(reg)))
+        y_br = self.output_layer(reg)
+        if self.topology_head is None:
+            return y_br
+        top = self.top_drop1(self.top_act1(self.top_fc1(x)))
+        top = self.top_drop2(self.top_act2(self.top_fc2(top)))
+        y_top = self.topology_head(top)
+        return y_br, y_top
 
     @classmethod
     def from_data_shapes(
@@ -131,22 +162,31 @@ class CNNModel(nn.Module):
                     stride=format_tuple(getattr(self.pool2, "stride", ())),
                 ),
                 f"  Global pooling: {self.global_pool.__class__.__name__}",
-                "  Linear Layers:",
-                "    fc1: Linear(in_features={in_f}, out_features={out_f})".format(
-                    in_f=self.fc1.in_features,
-                    out_f=self.fc1.out_features,
+                "  Regression head:",
+                "    reg_fc1: Linear(in_features={in_f}, out_features={out_f})".format(
+                    in_f=self.reg_fc1.in_features,
+                    out_f=self.reg_fc1.out_features,
                 ),
-                f"      activation: {self.fc1_act.__class__.__name__}",
-                f"      dropout: {self.fc1_drop.__class__.__name__}",
-                "    fc2: Linear(in_features={in_f}, out_features={out_f})".format(
-                    in_f=self.fc2.in_features,
-                    out_f=self.fc2.out_features,
+                f"      activation: {self.reg_act1.__class__.__name__}",
+                f"      dropout: {self.reg_drop1.__class__.__name__}",
+                "    reg_fc2: Linear(in_features={in_f}, out_features={out_f})".format(
+                    in_f=self.reg_fc2.in_features,
+                    out_f=self.reg_fc2.out_features,
                 ),
-                f"      activation: {self.fc2_act.__class__.__name__}",
-                f"      dropout: {self.fc2_drop.__class__.__name__}",
+                f"      activation: {self.reg_act2.__class__.__name__}",
+                f"      dropout: {self.reg_drop2.__class__.__name__}",
                 "  Output layer: Linear(in_features={in_f}, out_features={out_f})".format(
                     in_f=self.output_layer.in_features,
                     out_f=self.output_layer.out_features,
+                ),
+                f"  Topology classification: {self.topology_classification}",
+                (
+                    "  Topology head: Linear(in_features={in_f}, out_features={out_f})".format(
+                        in_f=self.topology_head.in_features,
+                        out_f=self.topology_head.out_features,
+                    )
+                    if self.topology_head is not None
+                    else "  Topology head: None"
                 ),
             ]
         )
