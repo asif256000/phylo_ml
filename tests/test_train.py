@@ -97,3 +97,39 @@ def test_trainer_raises_when_num_outputs_mismatch(tmp_path):
 
     with pytest.raises(ValueError):
         trainer.run()
+
+
+def test_trainer_requires_y_top_when_topology_enabled(tmp_path):
+    dataset_path = tmp_path / "dataset.npy"
+    dtype = [
+        ("X", np.float32, (4, 6, 4)),
+        ("y_br", np.float32, (10,)),
+    ]
+    data = np.zeros(2, dtype=dtype)
+    data["y_br"] = np.array(
+        [[0.2] * 10, [0.5] * 10],
+        dtype=np.float32,
+    )
+    data["X"] = 0.25
+    np.save(dataset_path, data)
+
+    payload = {
+        "seed": 1,
+        "label_transform": {"strategy": "sqrt"},
+        "data": {
+            "dataset_file": str(dataset_path.resolve()),
+            "batch_size": 1,
+            "num_workers": 0,
+            "train_ratio": 0.5,
+            "val_ratio": 0.25,
+        },
+        "trainer": {"epochs": 1, "patience": 1, "learning_rate": 0.001, "weight_decay": 0.0},
+        "model": {"num_outputs": 10, "topology_classification": True},
+        "outputs": {"results_dir": str((tmp_path / "plots").resolve())},
+    }
+
+    config = TrainingConfig.from_mapping(payload, base_path=tmp_path)
+    trainer = Trainer(config)
+
+    with pytest.raises(ValueError):
+        trainer.run()
