@@ -2,6 +2,7 @@
 **.npy
 **.png
 **.txt
+**.csv
 **.out
 **.egg-info
 bkp_**
