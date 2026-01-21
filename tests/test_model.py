@@ -48,6 +48,9 @@ def test_model_layer_configuration():
     assert conv2.padding == (0, 0)
     assert isinstance(model.pool2, nn.AvgPool2d)
 
+    assert model.reg_fc1.in_features == 64
+    assert model.reg_fc2.out_features == 128
+
     # Forward a single example to ensure pooling and fully connected layers are wired correctly
     dummy_input = torch.randn(1, 4, num_taxa, seq_length)
     output = model(dummy_input)
@@ -71,3 +74,25 @@ def test_model_string_representation_includes_layers():
     assert "Conv2d" in description
     assert "Linear" in description
     assert "Global pooling" in description
+
+
+def test_model_with_topology_head_returns_tuple():
+    num_taxa = 4
+    num_outputs = 10
+    num_topology_classes = 5
+    model = CNNModel(
+        num_taxa=num_taxa,
+        num_outputs=num_outputs,
+        in_channels=4,
+        label_transform="sqrt",
+        tree_rooted=True,
+        topology_classification=True,
+        num_topology_classes=num_topology_classes,
+    )
+
+    dummy_input = torch.randn(2, 4, num_taxa, 1000)
+    output = model(dummy_input)
+    assert isinstance(output, tuple)
+    y_br, y_top = output
+    assert y_br.shape == (2, num_outputs)
+    assert y_top.shape == (2, num_topology_classes)
