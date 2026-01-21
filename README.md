@@ -32,7 +32,7 @@ The CNN trainer expects structured NumPy records with encoded sequences (`X`) an
 python -m src.cnn --config path/to/training.yaml
 ```
 
-Topology classification targets are not used by the CNN.
+Set `model.topology_classification: true` to enable the optional topology classification head. This does **not** change `model.num_outputs`; branch-length regression still uses `y_br`, while topology classification uses `y_top`.
 
 ### KAN workflow
 
@@ -53,3 +53,13 @@ pytest
 ```
 
 Test suites cover CNN architecture behaviours (`tests/test_model.py`) and data splitting plus trainer invariants (`tests/test_train.py`).
+
+### Output artifacts
+
+ `br_predictions.csv`:
+  - Regression rows: `Sample,Branch,Actual,Predicted`.
+ `top_predictions.csv` (only when enabled):
+  - Topology rows: `Sample,TrueClass,PredClass`.
+ `metrics.txt`:
+  - Regression metrics: per-branch MAE/MSE/RMSE/R2, total-branch metrics, and overall metrics.
+  - Topology metrics (only when enabled): Accuracy, Macro F1, full classification report, and confusion matrix.
