@@ -15,6 +15,7 @@ from sklearn.metrics import (
     confusion_matrix,
     mean_absolute_error,
     mean_squared_error,
+    precision_recall_fscore_support,
     r2_score,
     root_mean_squared_error,
 )
@@ -564,6 +565,7 @@ def _save_predictions_and_metrics(
     overall_metrics: dict[str, float] | None = None,
     topology_metrics: dict[str, float] | None = None,
     topology_report: str | None = None,
+    topology_class_metrics: list[dict[str, float]] | None = None,
     topology_confusion: np.ndarray | None = None,
 ) -> None:
     """Save predictions and metrics to text files in results_dir."""
@@ -649,13 +651,36 @@ def _save_predictions_and_metrics(
                     f1=topology_metrics.get("macro_f1", float("nan")),
                 )
             )
+            f.write(
+                "Weighted F1: {f1:.6f} | Macro Precision: {p:.6f} | Macro Recall: {r:.6f}\n".format(
+                    f1=topology_metrics.get("weighted_f1", float("nan")),
+                    p=topology_metrics.get("macro_precision", float("nan")),
+                    r=topology_metrics.get("macro_recall", float("nan")),
+                )
+            )
+        if topology_class_metrics:
+            f.write("\n=== Topology Per-Class Metrics ===\n")
+            f.write("Class,Precision,Recall,F1,Support\n")
+            for row in topology_class_metrics:
+                f.write(
+                    "{cls},{p:.6f},{r:.6f},{f1:.6f},{supp}\n".format(
+                        cls=int(row["class"]),
+                        p=row["precision"],
+                        r=row["recall"],
+                        f1=row["f1"],
+                        supp=int(row["support"]),
+                    )
+                )
         if topology_report:
             f.write("\n=== Topology Classification Report ===\n")
             f.write(topology_report.rstrip("\n") + "\n")
         if topology_confusion is not None:
             f.write("\n=== Topology Confusion Matrix ===\n")
-            for row in topology_confusion:
-                f.write(" ".join(str(int(val)) for val in row) + "\n")
+            num_classes = topology_confusion.shape[0]
+            header = "\t".join(["true\\pred", *[str(i) for i in range(num_classes)]])
+            f.write(header + "\n")
+            for idx, row in enumerate(topology_confusion):
+                f.write("\t".join([str(idx), *[str(int(val)) for val in row]]) + "\n")
         # Training summary before losses
         f.write("\n=== Training Summary ===\n")
         if training_status:
@@ -885,6 +910,7 @@ class Trainer:
         topology_metrics: dict[str, float] | None = None
         topology_report: str | None = None
         topology_confusion: np.ndarray | None = None
+        topology_class_metrics: list[dict[str, float]] | None = None
         if preds.size > 0 and trues.size > 0:
             num_branches = preds.shape[1]
             for idx in range(num_branches):
@@ -959,14 +985,43 @@ class Trainer:
                 true_classes = true_top.astype(int)
             else:
                 true_classes = np.argmax(true_top, axis=1)
+            precision, recall, f1, support = precision_recall_fscore_support(
+                true_classes,
+                pred_classes,
+                average="macro",
+                zero_division=0,
+            )
+            weighted_precision, weighted_recall, weighted_f1, _ = precision_recall_fscore_support(
+                true_classes,
+                pred_classes,
+                average="weighted",
+                zero_division=0,
+            )
             topology_metrics = {
                 "accuracy": float(accuracy_score(true_classes, pred_classes)),
-                "macro_f1": float(
-                    classification_report(true_classes, pred_classes, output_dict=True, zero_division=0)["macro avg"][
-                        "f1-score"
-                    ]
-                ),
+                "macro_f1": float(f1),
+                "macro_precision": float(precision),
+                "macro_recall": float(recall),
+                "weighted_f1": float(weighted_f1),
+                "weighted_precision": float(weighted_precision),
+                "weighted_recall": float(weighted_recall),
             }
+            per_prec, per_rec, per_f1, per_support = precision_recall_fscore_support(
+                true_classes,
+                pred_classes,
+                average=None,
+                zero_division=0,
+            )
+            topology_class_metrics = [
+                {
+                    "class": cls,
+                    "precision": float(per_prec[cls]),
+                    "recall": float(per_rec[cls]),
+                    "f1": float(per_f1[cls]),
+                    "support": float(per_support[cls]),
+                }
+                for cls in range(len(per_prec))
+            ]
             topology_report = classification_report(true_classes, pred_classes, zero_division=0)
             topology_confusion = confusion_matrix(true_classes, pred_classes)
             print(
@@ -1002,6 +1057,7 @@ class Trainer:
             topology_metrics=topology_metrics,
             topology_report=topology_report,
             topology_confusion=topology_confusion,
+            topology_class_metrics=topology_class_metrics,
         )
 
         return TrainingResult(
