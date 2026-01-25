@@ -346,6 +346,7 @@ def _train_epoch(
     topo_criterion: torch.nn.Module | None,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    regression_weight: float,
     topology_weight: float,
 ) -> float:
     model.train()
@@ -365,7 +366,7 @@ def _train_epoch(
         optimizer.zero_grad()
         outputs = model(features)
         pred_br, pred_top = _split_outputs(outputs)
-        loss = criterion(pred_br, y_br)
+        loss = regression_weight * criterion(pred_br, y_br)
         if y_top is not None:
             if topo_criterion is None or pred_top is None:
                 raise RuntimeError("Topology classification enabled but classification head is missing")
@@ -391,6 +392,7 @@ def _evaluate(
     criterion: torch.nn.Module,
     topo_criterion: torch.nn.Module | None,
     device: torch.device,
+    regression_weight: float,
     topology_weight: float,
 ) -> float:
     model.eval()
@@ -409,7 +411,7 @@ def _evaluate(
                 y_top = y_top.to(device, non_blocking=True)
             outputs = model(features)
             pred_br, pred_top = _split_outputs(outputs)
-            loss = criterion(pred_br, y_br)
+            loss = regression_weight * criterion(pred_br, y_br)
             if y_top is not None:
                 if topo_criterion is None or pred_top is None:
                     raise RuntimeError("Topology classification enabled but classification head is missing")
@@ -835,6 +837,7 @@ class Trainer:
                 topo_criterion,
                 optimizer,
                 self.device,
+                model_cfg.regression_weight,
                 model_cfg.topology_weight,
             )
             val_loss = _evaluate(
@@ -843,6 +846,7 @@ class Trainer:
                 criterion,
                 topo_criterion,
                 self.device,
+                model_cfg.regression_weight,
                 model_cfg.topology_weight,
             )
             train_losses.append(train_loss)
@@ -879,6 +883,7 @@ class Trainer:
             criterion,
             topo_criterion,
             self.device,
+            model_cfg.regression_weight,
             model_cfg.topology_weight,
         )
         runtime = time.time() - start
