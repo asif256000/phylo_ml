@@ -54,6 +54,8 @@ This document describes all configuration fields used by the CNN and KAN modules
   - Whether the tree is rooted. Used in model metadata and output summaries.
 - `model.topology_classification` (bool, optional, default: `false`)
   - If `true`, CNN adds a topology classification head and expects `y_top` in the dataset.
+- `model.regression_weight` (float, optional, default: `1.0`)
+  - Multiplier for regression loss (MSE).
 - `model.topology_weight` (float, optional, default: `1.0`)
   - Multiplier for topology classification loss when enabled.
 
