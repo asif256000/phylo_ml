@@ -58,6 +58,7 @@ class ModelSettings:
     num_taxa: int | None = None
     rooted: bool = True
     topology_classification: bool = False
+    regression_weight: float = 1.0
     topology_weight: float = 1.0
     kan_settings: KANSettings | None = None
 
@@ -262,6 +263,9 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
     rooted = bool(model_payload.get("rooted", True))
 
     topology_classification = bool(model_payload.get("topology_classification", False))
+    regression_weight = float(model_payload.get("regression_weight", 1.0))
+    if regression_weight < 0:
+        raise ConfigurationError("'model.regression_weight' cannot be negative")
     topology_weight = float(model_payload.get("topology_weight", 1.0))
     if topology_weight < 0:
         raise ConfigurationError("'model.topology_weight' cannot be negative")
@@ -274,6 +278,7 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
         num_taxa=num_taxa_value,
         rooted=rooted,
         topology_classification=topology_classification,
+        regression_weight=regression_weight,
         topology_weight=topology_weight,
         kan_settings=kan_settings,
     )
