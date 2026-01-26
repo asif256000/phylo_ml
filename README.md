@@ -54,6 +54,28 @@ pytest
 
 Test suites cover CNN architecture behaviours (`tests/test_model.py`) and data splitting plus trainer invariants (`tests/test_train.py`).
 
+## Data sanity checks
+
+Use the scripts under `scripts/` to validate dataset labels and run a topology overfit check.
+
+- Label verification (one-hot validation + class balance):
+
+  ```bash
+  python scripts/verify.py
+  ```
+
+- Overfit check for topology classification (balanced subset):
+
+  ```bash
+  python scripts/overfit_check.py --topology-only --full-batch --learning-rate 1e-2 --epochs 300 --disable-dropout
+  ```
+
+- Linear probe sanity test (separability):
+
+  ```bash
+  python scripts/overfit_check.py --topology-only --linear-probe --full-batch --learning-rate 1e-2 --epochs 300
+  ```
+
 ### Output artifacts
 
  `br_predictions.csv`:
