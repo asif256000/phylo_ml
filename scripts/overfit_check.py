@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from src.cnn.config import ConfigurationError, load_training_config
-from src.cnn.model import CNNModel
+from src.cnn.model import ParallelCNNModel, SerialCNNModel
 from src.cnn.train import LabelTransformer, SequenceDataset
 
 
@@ -218,7 +218,9 @@ def main() -> None:
             num_topology_classes,
         ).to(device)
     else:
-        model = CNNModel(
+        architecture = cfg.model.regression_classification_architecture
+        model_cls = SerialCNNModel if architecture == "serial" else ParallelCNNModel
+        model = model_cls(
             num_taxa=num_clades,
             num_outputs=y_br.shape[1],
             in_channels=cfg.model.in_channels or num_channels,
