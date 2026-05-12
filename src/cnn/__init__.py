@@ -1,37 +1,15 @@
-"""Configurable CNN training pipeline for phylogenetic branch length prediction."""
+"""CNN module for regression-only training."""
 
-from src.configuration.training import (
-    ConfigurationError,
-    ConvLayerSettings,
-    DataSettings,
-    LabelTransformSettings,
-    LinearLayerSettings,
-    ModelSettings,
-    OutputSettings,
-    PoolingSettings,
-    TrainerSettings,
-    TrainingConfig,
-    load_training_config,
-)
-
-from .model import CNNModel
-from .trainer import CNNTrainer, SequenceDataset, TrainingResult, split_indices
+from .config import TrainingConfig
+from .model import CNNModel, ParallelCNNModel, SerialCNNModel
+from .train import Trainer, TrainingResult, run_training
 
 __all__ = [
-    "ConfigurationError",
-    "ConvLayerSettings",
-    "DataSettings",
-    "LabelTransformSettings",
-    "LinearLayerSettings",
-    "ModelSettings",
-    "OutputSettings",
-    "PoolingSettings",
-    "TrainerSettings",
-    "TrainingConfig",
-    "load_training_config",
     "CNNModel",
-    "CNNTrainer",
-    "SequenceDataset",
+    "ParallelCNNModel",
+    "SerialCNNModel",
+    "Trainer",
+    "TrainingConfig",
     "TrainingResult",
-    "split_indices",
+    "run_training",
 ]

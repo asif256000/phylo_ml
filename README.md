@@ -1,6 +1,6 @@
 # Phylogenetic ML Models
 
-This project provides two phylogenetic branch-length regressors: a configurable convolutional neural network (CNN) and a Kolmogorov-Arnold Network (KAN). Bring prepared sequence datasets (`.npy` files) to train either architecture.
+This project provides two phylogenetic branch-length regressors: a CNN and a Kolmogorov-Arnold Network (KAN). Bring prepared sequence datasets (`.npy` files) to train either architecture.
 
 ## Setup
 
@@ -16,10 +16,9 @@ This project provides two phylogenetic branch-length regressors: a configurable 
 
 Training configurations share a common schema with model-specific sub-sections. Key fields:
 
-- Common model keys: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight`.
-- `model.cnn`: convolution blocks, linear layers, global pooling, and related CNN hyperparameters.
+- `model`: `in_channels`, `rooted`, `num_outputs`, `topology_classification`, `topology_weight` (used by CNN/KAN where applicable).
 - `model.kan`: hidden layer widths, spline/grid parameters, regularisation toggles, and other KAN options.
-- `data`, `trainer`, `label_transform`, `outputs`: dataset location, training schedule, label transforms, and artifact directories.
+- `data`, `trainer`, `label_transform`, `outputs`: dataset location, training schedule, label transforms, and output directories (`outputs.results_dir`).
 
 Sample configurations live in `sample_config/training.yaml` and `sample_config/training.json`.
 
@@ -27,13 +26,13 @@ Sample configurations live in `sample_config/training.yaml` and `sample_config/t
 
 ### CNN workflow
 
-The CNN trainer expects structured NumPy records with encoded sequences (`X`), branch-length targets (`y_br`), optional topology labels (`y_top`), and masks. Populate the `model.cnn` block and launch training:
+The CNN trainer expects structured NumPy records with encoded sequences (`X`) and branch-length targets (`y_br`). Populate the common `model` fields and launch training:
 
 ```bash
 python -m src.cnn --config path/to/training.yaml
 ```
 
-If `model.topology_classification` is enabled, the trainer uses the additional topology targets for multi-task learning.
+Set `model.topology_classification: true` to enable the optional topology classification head. This does **not** change `model.num_outputs`; branch-length regression still uses `y_br`, while topology classification uses `y_top`.
 
 ### KAN workflow
 
@@ -54,3 +53,35 @@ pytest
 ```
 
 Test suites cover CNN architecture behaviours (`tests/test_model.py`) and data splitting plus trainer invariants (`tests/test_train.py`).
+
+## Data sanity checks
+
+Use the scripts under `scripts/` to validate dataset labels and run a topology overfit check.
+
+- Label verification (one-hot validation + class balance):
+
+  ```bash
+  python scripts/verify.py
+  ```
+
+- Overfit check for topology classification (balanced subset):
+
+  ```bash
+  python scripts/overfit_check.py --topology-only --full-batch --learning-rate 1e-2 --epochs 300 --disable-dropout
+  ```
+
+- Linear probe sanity test (separability):
+
+  ```bash
+  python scripts/overfit_check.py --topology-only --linear-probe --full-batch --learning-rate 1e-2 --epochs 300
+  ```
+
+### Output artifacts
+
+ `br_predictions.csv`:
+  - Regression rows: `Sample,Branch,Actual,Predicted`.
+ `top_predictions.csv` (only when enabled):
+  - Topology rows: `Sample,TrueClass,PredClass`.
+ `metrics.txt`:
+  - Regression metrics: per-branch MAE/MSE/RMSE/R2, total-branch metrics, and overall metrics.
+  - Topology metrics (only when enabled): Accuracy, Macro F1, full classification report, and confusion matrix.

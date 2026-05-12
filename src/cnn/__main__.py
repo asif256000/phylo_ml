@@ -3,34 +3,26 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.configuration.training import ConfigurationError, load_training_config
+from . import run_training
+from .config import ConfigurationError, load_training_config
 
-from .trainer import CNNTrainer
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Train the configurable CNN using a YAML/JSON configuration file.",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run CNN training (regression-only)")
     parser.add_argument(
         "--config",
         "-c",
         type=Path,
         default=Path("config/training.yaml"),
-        help="Path to the training configuration file (default: config/training.yaml)",
+        help="Path to YAML/JSON training config (default: config/training.yaml)",
     )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+    args = parser.parse_args()
     try:
-        config = load_training_config(args.config)
-    except (FileNotFoundError, ConfigurationError) as exc:
+        cfg = load_training_config(args.config)
+    except (FileNotFoundError, ConfigurationError, ValueError) as exc:
         raise SystemExit(f"Failed to load training configuration: {exc}") from exc
 
-    trainer = CNNTrainer(config)
-    trainer.run()
+    run_training(cfg)
 
 
 if __name__ == "__main__":

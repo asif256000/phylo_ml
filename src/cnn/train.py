@@ -9,11 +9,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib import colors
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, root_mean_squared_error
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_recall_fscore_support,
+    r2_score,
+    root_mean_squared_error,
+)
 from torch.utils.data import DataLoader, Dataset
 
 from .config import TrainingConfig
-from .model import CNNModel
+from .model import ParallelCNNModel, SerialCNNModel
 
 
 def _get_model_summary(
@@ -147,6 +156,7 @@ class SequenceDataset(Dataset):
         data: np.memmap,
         indices: np.ndarray,
         y_br: np.ndarray,
+        y_top: np.ndarray | None,
         num_clades: int,
         seq_length: int,
         num_channels: int,
@@ -159,11 +169,14 @@ class SequenceDataset(Dataset):
         if y_br.dtype != np.float32:
             y_br = y_br.astype(np.float32, copy=False)
         self.y_br = np.ascontiguousarray(y_br)
+        if y_top is not None and y_top.dtype != np.float32:
+            y_top = y_top.astype(np.float32, copy=False)
+        self.y_top = None if y_top is None else np.ascontiguousarray(y_top)
 
     def __len__(self) -> int:
         return self.indices.size
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         record = self.data[self.indices[idx]]
         encoded = record["X"]
         if encoded.ndim != 3:
@@ -176,7 +189,10 @@ class SequenceDataset(Dataset):
         encoded = np.transpose(encoded, (2, 0, 1))
         features = torch.from_numpy(np.ascontiguousarray(encoded, dtype=np.float32))
         y_br = torch.from_numpy(self.y_br[self.indices[idx]])
-        return features, y_br
+        if self.y_top is None:
+            return features, y_br
+        y_top = torch.from_numpy(self.y_top[self.indices[idx]])
+        return features, y_br, y_top
 
 
 def split_indices(
@@ -219,9 +235,67 @@ def split_indices(
     return train_idx, val_idx, test_idx
 
 
+def split_indices_stratified(
+    labels: np.ndarray,
+    train_ratio: float,
+    val_ratio: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not 0 < train_ratio < 1:
+        raise ValueError("train_ratio must be between 0 and 1")
+    if not 0 <= val_ratio < 1:
+        raise ValueError("val_ratio must be between 0 and 1")
+    if train_ratio + val_ratio > 0.95:
+        raise ValueError("train_ratio + val_ratio cannot exceed 0.95")
+
+    rng = np.random.default_rng(seed)
+    labels = np.asarray(labels)
+    if labels.ndim != 1:
+        raise ValueError("labels must be a 1D array for stratified splitting")
+
+    unique_labels = np.unique(labels)
+    train_idx: list[int] = []
+    val_idx: list[int] = []
+    test_idx: list[int] = []
+
+    for label in unique_labels:
+        class_indices = np.flatnonzero(labels == label)
+        rng.shuffle(class_indices)
+        n = class_indices.size
+        if n == 0:
+            continue
+        train_size = max(1, int(n * train_ratio))
+        val_min = 1 if val_ratio > 0 else 0
+        val_size = max(val_min, int(n * val_ratio))
+        test_size = n - train_size - val_size
+
+        while test_size <= 0 and (train_size > 1 or val_size > val_min):
+            if train_size > 1:
+                train_size -= 1
+            elif val_size > val_min:
+                val_size -= 1
+            test_size = n - train_size - val_size
+
+        if train_size <= 0 or test_size <= 0:
+            raise ValueError("Stratified split produced empty train/test split; adjust ratios or dataset")
+
+        train_idx.extend(class_indices[:train_size])
+        val_idx.extend(class_indices[train_size : train_size + val_size])
+        test_idx.extend(class_indices[train_size + val_size : train_size + val_size + test_size])
+
+    train_idx_arr = np.array(train_idx)
+    val_idx_arr = np.array(val_idx)
+    test_idx_arr = np.array(test_idx)
+    rng.shuffle(train_idx_arr)
+    rng.shuffle(val_idx_arr)
+    rng.shuffle(test_idx_arr)
+    return train_idx_arr, val_idx_arr, test_idx_arr
+
+
 def _build_dataloaders(
     data: np.memmap,
     y_br: np.ndarray,
+    y_top: np.ndarray | None,
     num_clades: int,
     seq_length: int,
     num_channels: int,
@@ -231,11 +305,20 @@ def _build_dataloaders(
     train_ratio: float,
     val_ratio: float,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
-    train_idx, val_idx, test_idx = split_indices(len(data), train_ratio, val_ratio, seed)
+    if y_top is not None:
+        if y_top.ndim == 1:
+            class_labels = y_top.astype(int)
+        else:
+            class_labels = np.argmax(y_top, axis=1)
+        train_idx, val_idx, test_idx = split_indices_stratified(
+            class_labels, train_ratio, val_ratio, seed
+        )
+    else:
+        train_idx, val_idx, test_idx = split_indices(len(data), train_ratio, val_ratio, seed)
 
-    train_dataset = SequenceDataset(data, train_idx, y_br, num_clades, seq_length, num_channels)
-    val_dataset = SequenceDataset(data, val_idx, y_br, num_clades, seq_length, num_channels)
-    test_dataset = SequenceDataset(data, test_idx, y_br, num_clades, seq_length, num_channels)
+    train_dataset = SequenceDataset(data, train_idx, y_br, y_top, num_clades, seq_length, num_channels)
+    val_dataset = SequenceDataset(data, val_idx, y_br, y_top, num_clades, seq_length, num_channels)
+    test_dataset = SequenceDataset(data, test_idx, y_br, y_top, num_clades, seq_length, num_channels)
 
     pin = torch.cuda.is_available()
     train_loader = DataLoader(
@@ -248,23 +331,51 @@ def _build_dataloaders(
     return train_loader, val_loader, test_loader
 
 
+def _split_outputs(
+    outputs: torch.Tensor | tuple[torch.Tensor, torch.Tensor]
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if isinstance(outputs, tuple):
+        return outputs[0], outputs[1]
+    return outputs, None
+
+
 def _train_epoch(
     model: CNNModel,
     loader: DataLoader,
     criterion: torch.nn.Module,
+    topo_criterion: torch.nn.Module | None,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    regression_weight: float,
+    topology_weight: float,
 ) -> float:
     model.train()
     running_loss = 0.0
     total_samples = 0
-    for features, y_br in loader:
+    for batch in loader:
+        if len(batch) == 3:
+            features, y_br, y_top = batch
+        else:
+            features, y_br = batch
+            y_top = None
         features = features.to(device, non_blocking=True)
         y_br = y_br.to(device, non_blocking=True)
+        if y_top is not None:
+            y_top = y_top.to(device, non_blocking=True)
 
         optimizer.zero_grad()
-        pred_br = model(features)
-        loss = criterion(pred_br, y_br)
+        outputs = model(features)
+        pred_br, pred_top = _split_outputs(outputs)
+        loss = regression_weight * criterion(pred_br, y_br)
+        if y_top is not None:
+            if topo_criterion is None or pred_top is None:
+                raise RuntimeError("Topology classification enabled but classification head is missing")
+            if y_top.ndim == 1:
+                target_classes = y_top.long()
+            else:
+                target_classes = torch.argmax(y_top, dim=1)
+            loss_top = topo_criterion(pred_top, target_classes)
+            loss = loss + topology_weight * loss_top
         loss.backward()
         optimizer.step()
 
@@ -279,17 +390,37 @@ def _evaluate(
     model: CNNModel,
     loader: DataLoader,
     criterion: torch.nn.Module,
+    topo_criterion: torch.nn.Module | None,
     device: torch.device,
+    regression_weight: float,
+    topology_weight: float,
 ) -> float:
     model.eval()
     running_loss = 0.0
     total_samples = 0
     with torch.no_grad():
-        for features, y_br in loader:
+        for batch in loader:
+            if len(batch) == 3:
+                features, y_br, y_top = batch
+            else:
+                features, y_br = batch
+                y_top = None
             features = features.to(device, non_blocking=True)
             y_br = y_br.to(device, non_blocking=True)
-            pred_br = model(features)
-            loss = criterion(pred_br, y_br)
+            if y_top is not None:
+                y_top = y_top.to(device, non_blocking=True)
+            outputs = model(features)
+            pred_br, pred_top = _split_outputs(outputs)
+            loss = regression_weight * criterion(pred_br, y_br)
+            if y_top is not None:
+                if topo_criterion is None or pred_top is None:
+                    raise RuntimeError("Topology classification enabled but classification head is missing")
+                if y_top.ndim == 1:
+                    target_classes = y_top.long()
+                else:
+                    target_classes = torch.argmax(y_top, dim=1)
+                loss_top = topo_criterion(pred_top, target_classes)
+                loss = loss + topology_weight * loss_top
             batch_size = features.size(0)
             running_loss += loss.item() * batch_size
             total_samples += batch_size
@@ -302,18 +433,34 @@ def _collect_predictions(
     loader: DataLoader,
     device: torch.device,
     transformer: LabelTransformer,
-) -> tuple[np.ndarray, np.ndarray]:
+    include_topology: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     preds: list[np.ndarray] = []
     trues: list[np.ndarray] = []
+    pred_top: list[np.ndarray] = []
+    true_top: list[np.ndarray] = []
     model.eval()
-    for features, y_br in loader:
+    for batch in loader:
+        if len(batch) == 3:
+            features, y_br, y_top = batch
+        else:
+            features, y_br = batch
+            y_top = None
         features = features.to(device, non_blocking=True)
         y_br = y_br.to(device, non_blocking=True)
-        pred_br = model(features)
+        if y_top is not None:
+            y_top = y_top.to(device, non_blocking=True)
+        outputs = model(features)
+        pred_br, pred_top_logits = _split_outputs(outputs)
         preds.append(transformer.inverse_tensor(pred_br).cpu().numpy())
         trues.append(transformer.inverse_tensor(y_br).cpu().numpy())
+        if include_topology:
+            if y_top is None or pred_top_logits is None:
+                raise RuntimeError("Topology classification enabled but missing y_top or logits")
+            pred_top.append(pred_top_logits.cpu().numpy())
+            true_top.append(y_top.cpu().numpy())
     if not preds:
-        return np.array([]), np.array([])
+        return np.array([]), np.array([]), None, None
 
     preds_arr = np.vstack(preds)
     trues_arr = np.vstack(trues)
@@ -321,7 +468,10 @@ def _collect_predictions(
     # Check for negative predictions after inverse transform
     _warn_if_negative(preds_arr, "POST-TRANSFORM:", "PREDICTED")
 
-    return preds_arr, trues_arr
+    pred_top_arr = np.vstack(pred_top) if pred_top else None
+    true_top_arr = np.vstack(true_top) if true_top else None
+
+    return preds_arr, trues_arr, pred_top_arr, true_top_arr
 
 
 def _plot_branch_pair(
@@ -405,6 +555,8 @@ def _save_predictions_and_metrics(
     results_dir: Path,
     preds: np.ndarray,
     trues: np.ndarray,
+    pred_top: np.ndarray | None,
+    true_top: np.ndarray | None,
     train_losses: list[float],
     val_losses: list[float],
     test_loss: float,
@@ -413,13 +565,17 @@ def _save_predictions_and_metrics(
     training_status: str | None = None,
     sum_metrics: dict[str, float] | None = None,
     overall_metrics: dict[str, float] | None = None,
+    topology_metrics: dict[str, float] | None = None,
+    topology_report: str | None = None,
+    topology_class_metrics: list[dict[str, float]] | None = None,
+    topology_confusion: np.ndarray | None = None,
 ) -> None:
     """Save predictions and metrics to text files in results_dir."""
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save predictions vs actual values
-    predictions_file = results_dir / "predictions.txt"
-    with open(predictions_file, "w") as f:
+    # Save regression predictions
+    br_predictions_file = results_dir / "br_predictions.csv"
+    with open(br_predictions_file, "w") as f:
         f.write("Sample,Branch,Actual,Predicted\n")
         num_samples = preds.shape[0]
         num_branches = preds.shape[1] if preds.ndim > 1 else 1
@@ -435,6 +591,19 @@ def _save_predictions_and_metrics(
                         f"{trues[sample_idx, branch_idx]:.6f},"
                         f"{preds[sample_idx, branch_idx]:.6f}\n"
                     )
+
+    # Save topology predictions (optional)
+    if pred_top is not None and true_top is not None:
+        top_predictions_file = results_dir / "top_predictions.csv"
+        with open(top_predictions_file, "w") as f:
+            f.write("Sample,TrueClass,PredClass\n")
+            pred_classes = np.argmax(pred_top, axis=1)
+            if true_top.ndim == 1:
+                true_classes = true_top.astype(int)
+            else:
+                true_classes = np.argmax(true_top, axis=1)
+            for sample_idx, (true_cls, pred_cls) in enumerate(zip(true_classes, pred_classes)):
+                f.write(f"{sample_idx},{int(true_cls)},{int(pred_cls)}\n")
 
     # Save metrics
     metrics_file = results_dir / "metrics.txt"
@@ -476,6 +645,44 @@ def _save_predictions_and_metrics(
                     r2=sum_metrics.get("r2", float("nan")),
                 )
             )
+        if topology_metrics:
+            f.write("\n=== Topology Classification Metrics ===\n")
+            f.write(
+                "Accuracy: {acc:.6f} | Macro F1: {f1:.6f}\n".format(
+                    acc=topology_metrics.get("accuracy", float("nan")),
+                    f1=topology_metrics.get("macro_f1", float("nan")),
+                )
+            )
+            f.write(
+                "Weighted F1: {f1:.6f} | Macro Precision: {p:.6f} | Macro Recall: {r:.6f}\n".format(
+                    f1=topology_metrics.get("weighted_f1", float("nan")),
+                    p=topology_metrics.get("macro_precision", float("nan")),
+                    r=topology_metrics.get("macro_recall", float("nan")),
+                )
+            )
+        if topology_class_metrics:
+            f.write("\n=== Topology Per-Class Metrics ===\n")
+            f.write("Class,Precision,Recall,F1,Support\n")
+            for row in topology_class_metrics:
+                f.write(
+                    "{cls},{p:.6f},{r:.6f},{f1:.6f},{supp}\n".format(
+                        cls=int(row["class"]),
+                        p=row["precision"],
+                        r=row["recall"],
+                        f1=row["f1"],
+                        supp=int(row["support"]),
+                    )
+                )
+        if topology_report:
+            f.write("\n=== Topology Classification Report ===\n")
+            f.write(topology_report.rstrip("\n") + "\n")
+        if topology_confusion is not None:
+            f.write("\n=== Topology Confusion Matrix ===\n")
+            num_classes = topology_confusion.shape[0]
+            header = "\t".join(["true\\pred", *[str(i) for i in range(num_classes)]])
+            f.write(header + "\n")
+            for idx, row in enumerate(topology_confusion):
+                f.write("\t".join([str(idx), *[str(int(val)) for val in row]]) + "\n")
         # Training summary before losses
         f.write("\n=== Training Summary ===\n")
         if training_status:
@@ -512,7 +719,7 @@ def _plot_loss_curve(train_losses: list[float], val_losses: list[float], output_
 
 
 class Trainer:
-    """Minimal trainer for regression-only CNN."""
+    """Trainer for CNN regression with optional topology classification."""
 
     def __init__(self, config: TrainingConfig) -> None:
         self.config = config
@@ -532,10 +739,13 @@ class Trainer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(cfg.seed)
 
+        print(f"DATASET FILE: {data_cfg.dataset_file}")
         dataset = np.load(data_cfg.dataset_file, mmap_mode="r")
         expected_fields = {"X", "y_br"}
+        if model_cfg.topology_classification:
+            expected_fields.add("y_top")
         if dataset.dtype.names is None or expected_fields - set(dataset.dtype.names):
-            raise ValueError("Dataset must contain structured fields 'X' and 'y_br'")
+            raise ValueError(f"Dataset must contain structured fields {sorted(expected_fields)}")
 
         example = dataset[0]
         if example["X"].ndim != 3:
@@ -560,12 +770,24 @@ class Trainer:
         # Apply label transform after shape checks
         y_br = self.transformer.transform_numpy(y_br_raw)
 
-        model = CNNModel(
+        y_top_raw: np.ndarray | None = None
+        num_topology_classes: int | None = None
+        if model_cfg.topology_classification:
+            y_top_raw = dataset["y_top"].astype(np.float32, copy=False)
+            if y_top_raw.ndim == 1:
+                y_top_raw = y_top_raw[:, None]
+            num_topology_classes = int(y_top_raw.shape[1])
+
+        architecture = model_cfg.regression_classification_architecture
+        model_cls = SerialCNNModel if architecture == "serial" else ParallelCNNModel
+        model = model_cls(
             num_taxa=num_clades,
             num_outputs=effective_outputs,
             in_channels=model_cfg.in_channels or num_channels,
             label_transform=cfg.label_transform.strategy,
             tree_rooted=model_cfg.rooted,
+            topology_classification=model_cfg.topology_classification,
+            num_topology_classes=num_topology_classes,
         ).to(self.device)
 
         model_summary = _get_model_summary(
@@ -582,6 +804,7 @@ class Trainer:
         train_loader, val_loader, test_loader = _build_dataloaders(
             data=dataset,
             y_br=y_br,
+            y_top=y_top_raw,
             num_clades=num_clades,
             seq_length=seq_length,
             num_channels=num_channels,
@@ -593,6 +816,7 @@ class Trainer:
         )
 
         criterion = torch.nn.MSELoss()
+        topo_criterion = torch.nn.CrossEntropyLoss() if model_cfg.topology_classification else None
         optimizer = torch.optim.Adam(
             model.parameters(), lr=trainer_cfg.learning_rate, weight_decay=trainer_cfg.weight_decay
         )
@@ -608,8 +832,25 @@ class Trainer:
 
         early_stopped = False
         for epoch in range(1, trainer_cfg.epochs + 1):
-            train_loss = _train_epoch(model, train_loader, criterion, optimizer, self.device)
-            val_loss = _evaluate(model, val_loader, criterion, self.device)
+            train_loss = _train_epoch(
+                model,
+                train_loader,
+                criterion,
+                topo_criterion,
+                optimizer,
+                self.device,
+                model_cfg.regression_weight,
+                model_cfg.topology_weight,
+            )
+            val_loss = _evaluate(
+                model,
+                val_loader,
+                criterion,
+                topo_criterion,
+                self.device,
+                model_cfg.regression_weight,
+                model_cfg.topology_weight,
+            )
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             last_epoch = epoch
@@ -638,7 +879,15 @@ class Trainer:
         if best_state is not None:
             model.load_state_dict(best_state)
 
-        test_loss = _evaluate(model, test_loader, criterion, self.device)
+        test_loss = _evaluate(
+            model,
+            test_loader,
+            criterion,
+            topo_criterion,
+            self.device,
+            model_cfg.regression_weight,
+            model_cfg.topology_weight,
+        )
         runtime = time.time() - start
 
         print("\n" + "=" * 60)
@@ -647,18 +896,28 @@ class Trainer:
         )
         print("=" * 60 + "\n")
 
-        base_results_dir = outputs_cfg.branch_plot_dir.expanduser().resolve()
-        results_dir = _get_next_results_dir(base_results_dir)
+        results_dir = outputs_cfg.results_dir.expanduser().resolve()
         results_dir.mkdir(parents=True, exist_ok=True)
+        print(f"RESULTS DIR: {results_dir}")
         plots_dir = results_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
 
         _plot_loss_curve(train_losses, val_losses, plots_dir / "loss_curve.png")
 
-        preds, trues = _collect_predictions(model, test_loader, self.device, self.transformer)
+        preds, trues, pred_top, true_top = _collect_predictions(
+            model,
+            test_loader,
+            self.device,
+            self.transformer,
+            model_cfg.topology_classification,
+        )
         branch_metrics_list: list[dict[str, float]] = []
         sum_metrics: dict[str, float] | None = None
         overall_metrics: dict[str, float] | None = None
+        topology_metrics: dict[str, float] | None = None
+        topology_report: str | None = None
+        topology_confusion: np.ndarray | None = None
+        topology_class_metrics: list[dict[str, float]] | None = None
         if preds.size > 0 and trues.size > 0:
             num_branches = preds.shape[1]
             for idx in range(num_branches):
@@ -727,7 +986,58 @@ class Trainer:
                 )
             )
 
-        print(f"Results saved to: {results_dir}")
+        if pred_top is not None and true_top is not None:
+            pred_classes = np.argmax(pred_top, axis=1)
+            if true_top.ndim == 1:
+                true_classes = true_top.astype(int)
+            else:
+                true_classes = np.argmax(true_top, axis=1)
+            precision, recall, f1, support = precision_recall_fscore_support(
+                true_classes,
+                pred_classes,
+                average="macro",
+                zero_division=0,
+            )
+            weighted_precision, weighted_recall, weighted_f1, _ = precision_recall_fscore_support(
+                true_classes,
+                pred_classes,
+                average="weighted",
+                zero_division=0,
+            )
+            topology_metrics = {
+                "accuracy": float(accuracy_score(true_classes, pred_classes)),
+                "macro_f1": float(f1),
+                "macro_precision": float(precision),
+                "macro_recall": float(recall),
+                "weighted_f1": float(weighted_f1),
+                "weighted_precision": float(weighted_precision),
+                "weighted_recall": float(weighted_recall),
+            }
+            per_prec, per_rec, per_f1, per_support = precision_recall_fscore_support(
+                true_classes,
+                pred_classes,
+                average=None,
+                zero_division=0,
+            )
+            topology_class_metrics = [
+                {
+                    "class": cls,
+                    "precision": float(per_prec[cls]),
+                    "recall": float(per_rec[cls]),
+                    "f1": float(per_f1[cls]),
+                    "support": float(per_support[cls]),
+                }
+                for cls in range(len(per_prec))
+            ]
+            topology_report = classification_report(true_classes, pred_classes, zero_division=0)
+            topology_confusion = confusion_matrix(true_classes, pred_classes)
+            print(
+                "Topology Metrics | Accuracy: {acc:.4f} | Macro F1: {f1:.4f}".format(
+                    acc=topology_metrics["accuracy"],
+                    f1=topology_metrics["macro_f1"],
+                )
+            )
+
         print(f"Total runtime: {runtime:.2f} seconds")
 
         # Compose training status string
@@ -741,6 +1051,8 @@ class Trainer:
             results_dir,
             preds,
             trues,
+            pred_top,
+            true_top,
             train_losses,
             val_losses,
             test_loss,
@@ -749,6 +1061,10 @@ class Trainer:
             training_status=training_status,
             sum_metrics=sum_metrics,
             overall_metrics=overall_metrics,
+            topology_metrics=topology_metrics,
+            topology_report=topology_report,
+            topology_confusion=topology_confusion,
+            topology_class_metrics=topology_class_metrics,
         )
 
         return TrainingResult(

@@ -3,297 +3,317 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from src.configuration.training import ModelSettings, PoolingSettings
-from src.utils import format_tuple, infer_num_outputs
-
-_ACTIVATIONS = {
-    "relu": nn.ReLU,
-    "gelu": nn.GELU,
-    "elu": nn.ELU,
-    "identity": nn.Identity,
-}
+from src.utils import format_tuple
 
 
-def _build_activation(name: str) -> nn.Module:
-    try:
-        activation_cls = _ACTIVATIONS[name]
-    except KeyError as exc:  # pragma: no cover - guarded by config validation
-        raise ValueError(f"Unsupported activation '{name}'") from exc
-    return activation_cls()
-
-
-def _build_pooling(settings: PoolingSettings) -> nn.Module:
-    if settings.kind == "identity":
-        return nn.Identity()
-
-    kernel_size = settings.kernel_size or (1, 1)
-    stride = settings.stride or kernel_size
-
-    if settings.kind == "max":
-        return nn.MaxPool2d(kernel_size=kernel_size, stride=stride)
-    if settings.kind == "avg":
-        return nn.AvgPool2d(kernel_size=kernel_size, stride=stride)
-
-    raise ValueError(f"Unsupported pooling kind '{settings.kind}'")  # pragma: no cover
-
-
-def _build_global_pool(kind: str) -> nn.Module:
-    if kind == "identity":
-        return nn.Identity()
-    if kind == "adaptive_avg":
-        return nn.AdaptiveAvgPool2d(1)
-    if kind == "adaptive_max":
-        return nn.AdaptiveMaxPool2d(1)
-    raise ValueError(f"Unsupported global pooling '{kind}'")  # pragma: no cover
-
-
-def _resolve_kernel_size(candidate: tuple[int, int], num_taxa: int) -> tuple[int, int]:
-    height, width = candidate
-    if height == -1:
-        height = num_taxa
-    if width <= 0:
-        raise ValueError("Kernel width must be positive")
-    if height <= 0:
-        raise ValueError("Kernel height must be positive")
-    return height, width
-
-
-def _resolve_padding(candidate: tuple[int, int]) -> tuple[int, int]:
-    return int(candidate[0]), int(candidate[1])
-
-
-def _resolve_stride(candidate: tuple[int, int]) -> tuple[int, int]:
-    return int(candidate[0]), int(candidate[1])
-
-
-class CNNModel(nn.Module):
-    """Configurable CNN that predicts phylogenetic branch lengths."""
+class _CNNBase(nn.Module):
+    """Shared CNN trunk for regression and topology classification."""
 
     def __init__(
         self,
-        model_settings: ModelSettings,
         *,
         num_taxa: int,
         num_outputs: int,
-        num_topology_classes: int | None = None,
+        in_channels: int = 4,
         label_transform: str | None = None,
         tree_rooted: bool = True,
+        topology_classification: bool = False,
+        num_topology_classes: int | None = None,
     ) -> None:
         super().__init__()
         if num_taxa <= 0:
             raise ValueError("num_taxa must be positive")
         if num_outputs <= 0:
             raise ValueError("num_outputs must be positive")
+        if topology_classification and (num_topology_classes is None or num_topology_classes <= 0):
+            raise ValueError("num_topology_classes must be positive when topology classification is enabled")
 
-        self.model_settings = model_settings
         self.num_taxa = num_taxa
         self.num_outputs = num_outputs
-        self.num_topology_classes = num_topology_classes
+        self.in_channels = in_channels
         self.label_transform_strategy = label_transform or "none"
         self.tree_rooted = tree_rooted
-        self.topology_classification = model_settings.topology_classification
+        self.topology_classification = topology_classification
+        self.num_topology_classes = num_topology_classes
 
-        self.conv_layers = nn.ModuleList()
-        in_channels = model_settings.in_channels
-        for layer_cfg in model_settings.conv_layers:
-            kernel_size = _resolve_kernel_size(layer_cfg.kernel_size, num_taxa)
-            stride = _resolve_stride(layer_cfg.stride)
-            padding = _resolve_padding(layer_cfg.padding)
+        # Convolutional stack (deeper + batch norm to improve topology signals)
+        self.conv1 = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=128,
+            kernel_size=(num_taxa, 1),
+            stride=(num_taxa, 1),
+            padding=(0, 1),
+        )
+        self.bn1 = nn.BatchNorm2d(128)
+        self.act1 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
 
-            conv = nn.Conv2d(
-                in_channels=in_channels,
-                out_channels=layer_cfg.out_channels,
-                kernel_size=kernel_size,
-                stride=stride,
-                padding=padding,
-            )
-            activation = _build_activation(layer_cfg.activation)
-            pooling = _build_pooling(layer_cfg.pool)
+        self.conv2 = nn.Conv2d(
+            in_channels=128,
+            out_channels=128,
+            kernel_size=(1, 3),
+            stride=(1, 1),
+            padding=(0, 1),
+        )
+        self.bn2 = nn.BatchNorm2d(128)
+        self.act2 = nn.ReLU()
+        self.pool2 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
 
-            block = nn.ModuleDict(
-                {
-                    "conv": conv,
-                    "activation": activation,
-                    "pool": pooling,
-                }
-            )
-            self.conv_layers.append(block)
-            in_channels = layer_cfg.out_channels
+        self.conv3 = nn.Conv2d(
+            in_channels=128,
+            out_channels=128,
+            kernel_size=(1, 3),
+            stride=(1, 1),
+            padding=(0, 1),
+        )
+        self.bn3 = nn.BatchNorm2d(128)
+        self.act3 = nn.ReLU()
+        self.pool3 = nn.Identity()
 
-        self.global_pool = _build_global_pool(model_settings.global_pool)
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.flatten = nn.Flatten()
+        self.feature_dim = 128
 
-        self.linear_layers = nn.ModuleList()
-        in_features = in_channels
-        for layer_cfg in model_settings.linear_layers:
-            linear = nn.Linear(in_features, layer_cfg.out_features)
-            activation = _build_activation(layer_cfg.activation)
-            dropout_module: nn.Module = nn.Dropout(layer_cfg.dropout) if layer_cfg.dropout > 0 else nn.Identity()
+    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool1(self.act1(self.bn1(self.conv1(x))))
+        x = self.pool2(self.act2(self.bn2(self.conv2(x))))
+        x = self.pool3(self.act3(self.bn3(self.conv3(x))))
+        x = self.global_pool(x)
+        return self.flatten(x)
 
-            block = nn.ModuleDict(
-                {
-                    "linear": linear,
-                    "activation": activation,
-                    "dropout": dropout_module,
-                }
-            )
-            self.linear_layers.append(block)
-            in_features = layer_cfg.out_features
 
-        self.output_layer = nn.Linear(in_features, num_outputs)
+class ParallelCNNModel(_CNNBase):
+    """Parallel regression + topology heads sharing a trunk."""
 
-        if self.topology_classification:
-            if num_topology_classes is None or num_topology_classes <= 0:
-                raise ValueError("num_topology_classes must be positive when topology_classification is enabled")
-            self.topology_head = nn.Linear(in_features, num_topology_classes)
+    def __init__(
+        self,
+        *,
+        num_taxa: int,
+        num_outputs: int,
+        in_channels: int = 4,
+        label_transform: str | None = None,
+        tree_rooted: bool = True,
+        topology_classification: bool = False,
+        num_topology_classes: int | None = None,
+    ) -> None:
+        super().__init__(
+            num_taxa=num_taxa,
+            num_outputs=num_outputs,
+            in_channels=in_channels,
+            label_transform=label_transform,
+            tree_rooted=tree_rooted,
+            topology_classification=topology_classification,
+            num_topology_classes=num_topology_classes,
+        )
+        self.architecture = "parallel"
+
+        # Regression head (MLP)
+        self.reg_fc1 = nn.Linear(self.feature_dim, 256)
+        self.reg_act1 = nn.ReLU()
+        self.reg_drop1 = nn.Dropout(0.1)
+
+        self.reg_fc2 = nn.Linear(256, 128)
+        self.reg_act2 = nn.ReLU()
+        self.reg_drop2 = nn.Dropout(0.1)
+
+        self.output_layer = nn.Linear(128, num_outputs)
+
+        # Topology classification head (MLP)
+        if topology_classification and num_topology_classes is not None:
+            self.top_fc1 = nn.Linear(self.feature_dim, 256)
+            self.top_act1 = nn.ReLU()
+            self.top_drop1 = nn.Dropout(0.1)
+            self.top_fc2 = nn.Linear(256, 128)
+            self.top_act2 = nn.ReLU()
+            self.top_drop2 = nn.Dropout(0.1)
+            self.topology_head = nn.Linear(128, num_topology_classes)
         else:
+            self.top_fc1 = None
+            self.top_act1 = None
+            self.top_drop1 = None
+            self.top_fc2 = None
+            self.top_act2 = None
+            self.top_drop2 = None
             self.topology_head = None
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
-        for block in self.conv_layers:
-            if not isinstance(block, nn.ModuleDict):  # pragma: no cover - defensive
-                raise RuntimeError("Unexpected convolutional block type")
-            conv = block["conv"]
-            activation = block["activation"]
-            pool = block["pool"]
-            if (
-                not isinstance(conv, nn.Conv2d)
-                or not isinstance(activation, nn.Module)
-                or not isinstance(pool, nn.Module)
-            ):
-                raise RuntimeError("Malformed convolutional block configuration")
-            x = conv(x)
-            x = activation(x)
-            x = pool(x)
-
-        x = self.global_pool(x)
-        x = self.flatten(x)
-
-        for block in self.linear_layers:
-            if not isinstance(block, nn.ModuleDict):  # pragma: no cover - defensive
-                raise RuntimeError("Unexpected linear block type")
-            linear = block["linear"]
-            activation = block["activation"]
-            dropout = block["dropout"]
-            if (
-                not isinstance(linear, nn.Linear)
-                or not isinstance(activation, nn.Module)
-                or not isinstance(dropout, nn.Module)
-            ):
-                raise RuntimeError("Malformed linear block configuration")
-            x = linear(x)
-            x = activation(x)
-            x = dropout(x)
-
-        y_br = self.output_layer(x)
-        y_top = self.topology_head(x) if self.topology_head is not None else None
+    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        x = self._encode(x)
+        reg = self.reg_drop1(self.reg_act1(self.reg_fc1(x)))
+        reg = self.reg_drop2(self.reg_act2(self.reg_fc2(reg)))
+        y_br = self.output_layer(reg)
+        if self.topology_head is None:
+            return y_br
+        top = self.top_drop1(self.top_act1(self.top_fc1(x)))
+        top = self.top_drop2(self.top_act2(self.top_fc2(top)))
+        y_top = self.topology_head(top)
         return y_br, y_top
 
     @classmethod
-    def from_config(
+    def from_data_shapes(
         cls,
-        model_settings: ModelSettings,
+        *,
+        encoded_shape: tuple[int, int, int],
+        y_br_shape: tuple[int, ...],
+        label_transform: str | None = None,
+        tree_rooted: bool = True,
+        in_channels: int | None = None,
+        num_outputs: int | None = None,
+    ) -> "CNNModel":
+        if len(encoded_shape) != 3:
+            raise ValueError("encoded_shape must be (taxa, seq_length, channels)")
+        num_taxa, _, num_channels = encoded_shape
+        outputs = num_outputs or y_br_shape[-1]
+        channels = in_channels or num_channels
+        return cls(
+            num_taxa=num_taxa,
+            num_outputs=outputs,
+            in_channels=channels,
+            label_transform=label_transform,
+            tree_rooted=tree_rooted,
+        )
+
+
+class SerialCNNModel(_CNNBase):
+    """Serial regression -> topology classification (classification sees regression output)."""
+
+    def __init__(
+        self,
         *,
         num_taxa: int,
-        num_outputs: int | None = None,
-        num_topology_classes: int | None = None,
-        rooted: bool | None = None,
+        num_outputs: int,
+        in_channels: int = 4,
         label_transform: str | None = None,
-    ) -> "CNNModel":
-        resolved_rooted = model_settings.rooted if rooted is None else rooted
-        resolved_outputs = num_outputs
-        if resolved_outputs is None:
-            resolved_outputs = model_settings.num_outputs or infer_num_outputs(num_taxa, rooted=resolved_rooted)
-        return cls(
-            model_settings,
+        tree_rooted: bool = True,
+        topology_classification: bool = False,
+        num_topology_classes: int | None = None,
+    ) -> None:
+        super().__init__(
             num_taxa=num_taxa,
-            num_outputs=resolved_outputs,
-            num_topology_classes=num_topology_classes,
+            num_outputs=num_outputs,
+            in_channels=in_channels,
             label_transform=label_transform,
-            tree_rooted=resolved_rooted,
+            tree_rooted=tree_rooted,
+            topology_classification=topology_classification,
+            num_topology_classes=num_topology_classes,
         )
+        self.architecture = "serial"
+
+        # Regression head (MLP)
+        self.reg_fc1 = nn.Linear(self.feature_dim, 256)
+        self.reg_act1 = nn.ReLU()
+        self.reg_drop1 = nn.Dropout(0.1)
+
+        self.reg_fc2 = nn.Linear(256, 128)
+        self.reg_act2 = nn.ReLU()
+        self.reg_drop2 = nn.Dropout(0.1)
+
+        self.output_layer = nn.Linear(128, num_outputs)
+
+        # Topology classification head (MLP), fed by trunk + regression output
+        if topology_classification and num_topology_classes is not None:
+            top_input_dim = self.feature_dim + num_outputs
+            self.top_fc1 = nn.Linear(top_input_dim, 256)
+            self.top_act1 = nn.ReLU()
+            self.top_drop1 = nn.Dropout(0.1)
+            self.top_fc2 = nn.Linear(256, 128)
+            self.top_act2 = nn.ReLU()
+            self.top_drop2 = nn.Dropout(0.1)
+            self.topology_head = nn.Linear(128, num_topology_classes)
+        else:
+            self.top_fc1 = None
+            self.top_act1 = None
+            self.top_drop1 = None
+            self.top_fc2 = None
+            self.top_act2 = None
+            self.top_drop2 = None
+            self.topology_head = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        x = self._encode(x)
+        reg = self.reg_drop1(self.reg_act1(self.reg_fc1(x)))
+        reg = self.reg_drop2(self.reg_act2(self.reg_fc2(reg)))
+        y_br = self.output_layer(reg)
+        if self.topology_head is None:
+            return y_br
+        top_input = torch.cat([x, y_br], dim=1)
+        top = self.top_drop1(self.top_act1(self.top_fc1(top_input)))
+        top = self.top_drop2(self.top_act2(self.top_fc2(top)))
+        y_top = self.topology_head(top)
+        return y_br, y_top
 
     def __str__(self) -> str:
-        lines: list[str] = []
-        lines.append("CNNModel architecture:")
-        lines.append(
-            f"  Inputs: in_channels={self.model_settings.in_channels}, num_taxa={self.num_taxa}, rooted={self.tree_rooted}"
+        architecture = getattr(self, "architecture", "parallel")
+        top_in = (
+            self.top_fc1.in_features
+            if getattr(self, "top_fc1", None) is not None
+            else "n/a"
         )
-        lines.append(f"  Label transform: {self.label_transform_strategy}")
-        lines.append(f"  Outputs: num_outputs={self.num_outputs}")
-        lines.append("  Convolutional Blocks:")
-        for idx, block in enumerate(self.conv_layers, start=1):
-            if not isinstance(block, nn.ModuleDict):  # pragma: no cover - defensive
-                raise RuntimeError("Unexpected convolutional block type")
-            conv = block["conv"]
-            pool = block["pool"]
-            activation = block["activation"]
-            if (
-                not isinstance(conv, nn.Conv2d)
-                or not isinstance(pool, nn.Module)
-                or not isinstance(activation, nn.Module)
-            ):
-                raise RuntimeError("Malformed convolutional block configuration")
-            lines.append(
-                "    conv{idx}: Conv2d(in_channels={in_c}, out_channels={out_c}, kernel_size={kernel}, stride={stride}, padding={padding})".format(
-                    idx=idx,
-                    in_c=conv.in_channels,
-                    out_c=conv.out_channels,
-                    kernel=format_tuple(conv.kernel_size),
-                    stride=format_tuple(conv.stride),
-                    padding=format_tuple(conv.padding),
-                )
-            )
-            lines.append(f"      activation: {activation.__class__.__name__}")
-            if not isinstance(pool, nn.Identity):
-                if hasattr(pool, "kernel_size") and hasattr(pool, "stride"):
-                    kernel = getattr(pool, "kernel_size", None)
-                    stride = getattr(pool, "stride", None)
-                    lines.append(
-                        "      pool: {name}(kernel_size={kernel}, stride={stride})".format(
-                            name=pool.__class__.__name__,
-                            kernel=format_tuple(kernel),
-                            stride=format_tuple(stride),
-                        )
+        return "\n".join(
+            [
+                "CNNModel architecture:",
+                f"  Regression/Classification: {architecture}",
+                f"  Inputs: in_channels={self.in_channels}, num_taxa={self.num_taxa}, rooted={self.tree_rooted}",
+                f"  Label transform: {self.label_transform_strategy}",
+                f"  Outputs: num_outputs={self.num_outputs}",
+                "  Convolutional Layers:",
+                "    conv1: Conv2d(in_channels={in_c}, out_channels=128, kernel_size={kernel}, stride={stride}, padding={padding})".format(
+                    in_c=self.conv1.in_channels,
+                    kernel=format_tuple(self.conv1.kernel_size),
+                    stride=format_tuple(self.conv1.stride),
+                    padding=format_tuple(self.conv1.padding),
+                ),
+                "      norm: BatchNorm2d(128)",
+                f"      activation: {self.act1.__class__.__name__}",
+                f"      pool: {self.pool1.__class__.__name__}",
+                "    conv2: Conv2d(in_channels=128, out_channels=128, kernel_size={kernel}, stride={stride}, padding={padding})".format(
+                    kernel=format_tuple(self.conv2.kernel_size),
+                    stride=format_tuple(self.conv2.stride),
+                    padding=format_tuple(self.conv2.padding),
+                ),
+                "      norm: BatchNorm2d(128)",
+                f"      activation: {self.act2.__class__.__name__}",
+                "      pool: {name}(kernel_size={kernel}, stride={stride})".format(
+                    name=self.pool2.__class__.__name__,
+                    kernel=format_tuple(getattr(self.pool2, "kernel_size", ())),
+                    stride=format_tuple(getattr(self.pool2, "stride", ())),
+                ),
+                "    conv3: Conv2d(in_channels=128, out_channels=128, kernel_size={kernel}, stride={stride}, padding={padding})".format(
+                    kernel=format_tuple(self.conv3.kernel_size),
+                    stride=format_tuple(self.conv3.stride),
+                    padding=format_tuple(self.conv3.padding),
+                ),
+                "      norm: BatchNorm2d(128)",
+                f"      activation: {self.act3.__class__.__name__}",
+                f"  Global pooling: {self.global_pool.__class__.__name__}",
+                "  Regression head:",
+                "    reg_fc1: Linear(in_features={in_f}, out_features={out_f})".format(
+                    in_f=self.reg_fc1.in_features,
+                    out_f=self.reg_fc1.out_features,
+                ),
+                f"      activation: {self.reg_act1.__class__.__name__}",
+                f"      dropout: {self.reg_drop1.__class__.__name__}",
+                "    reg_fc2: Linear(in_features={in_f}, out_features={out_f})".format(
+                    in_f=self.reg_fc2.in_features,
+                    out_f=self.reg_fc2.out_features,
+                ),
+                f"      activation: {self.reg_act2.__class__.__name__}",
+                f"      dropout: {self.reg_drop2.__class__.__name__}",
+                "  Output layer: Linear(in_features={in_f}, out_features={out_f})".format(
+                    in_f=self.output_layer.in_features,
+                    out_f=self.output_layer.out_features,
+                ),
+                f"  Topology classification: {self.topology_classification}",
+                (
+                    "  Topology head: Linear(in_features={in_f}, out_features={out_f})".format(
+                        in_f=top_in,
+                        out_f=self.topology_head.out_features,
                     )
-                else:
-                    lines.append(f"      pool: {pool.__class__.__name__}")
-            else:
-                lines.append("      pool: Identity")
-
-        lines.append(f"  Global pooling: {self.global_pool.__class__.__name__}")
-
-        lines.append("  Linear Blocks:")
-        for idx, block in enumerate(self.linear_layers, start=1):
-            if not isinstance(block, nn.ModuleDict):  # pragma: no cover - defensive
-                raise RuntimeError("Unexpected linear block type")
-            linear = block["linear"]
-            activation = block["activation"]
-            dropout = block["dropout"]
-            if (
-                not isinstance(linear, nn.Linear)
-                or not isinstance(activation, nn.Module)
-                or not isinstance(dropout, nn.Module)
-            ):
-                raise RuntimeError("Malformed linear block configuration")
-            lines.append(
-                "    linear{idx}: Linear(in_features={in_f}, out_features={out_f})".format(
-                    idx=idx,
-                    in_f=linear.in_features,
-                    out_f=linear.out_features,
-                )
-            )
-            lines.append(f"      activation: {activation.__class__.__name__}")
-            if isinstance(dropout, nn.Dropout):
-                lines.append(f"      dropout: Dropout(p={dropout.p})")
-            else:
-                lines.append(f"      dropout: {dropout.__class__.__name__}")
-
-        lines.append(
-            "  Output layer: Linear(in_features={in_f}, out_features={out_f})".format(
-                in_f=self.output_layer.in_features,
-                out_f=self.output_layer.out_features,
-            )
+                    if self.topology_head is not None
+                    else "  Topology head: None"
+                ),
+            ]
         )
 
-        return "\n".join(lines)
+
+# Backwards compatibility: CNNModel points to the parallel architecture.
+CNNModel = ParallelCNNModel

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "phylo-rooting"
 version = "0.1.0"
-description = "Phylogenetic machine learning models (currently CNN branch-length predictor)"
+description = "Phylogenetic machine learning models (CNN and KAN branch-length predictors)"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Asif Iqbal" }]
