@@ -37,18 +37,18 @@ def test_model_layer_configuration():
     )
 
     conv1 = model.conv1
-    assert conv1.kernel_size == (num_taxa, 1)
+    assert conv1.kernel_size == (num_taxa, 3)
     assert conv1.stride == (num_taxa, 1)
-    assert conv1.padding == (0, 0)
-    assert isinstance(model.pool1, nn.Identity)
+    assert conv1.padding == (0, 1)
+    assert isinstance(model.pool1, nn.MaxPool2d)
 
     conv2 = model.conv2
     assert conv2.kernel_size == (1, 3)
     assert conv2.stride == (1, 1)
-    assert conv2.padding == (0, 0)
-    assert isinstance(model.pool2, nn.AvgPool2d)
+    assert conv2.padding == (0, 1)
+    assert isinstance(model.pool2, nn.MaxPool2d)
 
-    assert model.reg_fc1.in_features == 64
+    assert model.reg_fc1.in_features == 128
     assert model.reg_fc2.out_features == 128
 
     # Forward a single example to ensure pooling and fully connected layers are wired correctly
