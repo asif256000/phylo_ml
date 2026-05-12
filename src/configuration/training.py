@@ -58,6 +58,7 @@ class ModelSettings:
     num_taxa: int | None = None
     rooted: bool = True
     topology_classification: bool = False
+    regression_classification_architecture: str = "parallel"
     regression_weight: float = 1.0
     topology_weight: float = 1.0
     kan_settings: KANSettings | None = None
@@ -263,6 +264,13 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
     rooted = bool(model_payload.get("rooted", True))
 
     topology_classification = bool(model_payload.get("topology_classification", False))
+    regression_classification_architecture = str(
+        model_payload.get("regression_classification_architecture", "parallel")
+    ).lower()
+    if regression_classification_architecture not in {"parallel", "serial"}:
+        raise ConfigurationError(
+            "'model.regression_classification_architecture' must be 'parallel' or 'serial'"
+        )
     regression_weight = float(model_payload.get("regression_weight", 1.0))
     if regression_weight < 0:
         raise ConfigurationError("'model.regression_weight' cannot be negative")
@@ -278,6 +286,7 @@ def _parse_model_settings(model_payload: Mapping[str, Any]) -> ModelSettings:
         num_taxa=num_taxa_value,
         rooted=rooted,
         topology_classification=topology_classification,
+        regression_classification_architecture=regression_classification_architecture,
         regression_weight=regression_weight,
         topology_weight=topology_weight,
         kan_settings=kan_settings,
