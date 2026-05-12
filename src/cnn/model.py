@@ -6,13 +6,8 @@ import torch.nn as nn
 from src.utils import format_tuple
 
 
-class CNNModel(nn.Module):
-    """Hardcoded CNN for branch-length regression only.
-
-    Architecture is fixed (two conv blocks, two linear blocks) and configured only by
-    input channel count, taxa count, and output size. This keeps YAML model settings
-    simple: only `in_channels`, `rooted`, and `num_outputs` are consumed.
-    """
+class _CNNBase(nn.Module):
+    """Shared CNN trunk for regression and topology classification."""
 
     def __init__(
         self,
@@ -41,32 +36,79 @@ class CNNModel(nn.Module):
         self.topology_classification = topology_classification
         self.num_topology_classes = num_topology_classes
 
-        # Convolutional stack
+        # Convolutional stack (deeper + batch norm to improve topology signals)
         self.conv1 = nn.Conv2d(
             in_channels=in_channels,
             out_channels=128,
             kernel_size=(num_taxa, 1),
             stride=(num_taxa, 1),
-            # padding=(0, 0),
+            padding=(0, 1),
         )
+        self.bn1 = nn.BatchNorm2d(128)
         self.act1 = nn.ReLU()
-        self.pool1 = nn.Identity()
+        self.pool1 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
 
         self.conv2 = nn.Conv2d(
             in_channels=128,
-            out_channels=64,
+            out_channels=128,
             kernel_size=(1, 3),
             stride=(1, 1),
-            # padding=(0, 1),
+            padding=(0, 1),
         )
+        self.bn2 = nn.BatchNorm2d(128)
         self.act2 = nn.ReLU()
-        self.pool2 = nn.AvgPool2d(kernel_size=(1, 2), stride=(1, 2))
+        self.pool2 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
+
+        self.conv3 = nn.Conv2d(
+            in_channels=128,
+            out_channels=128,
+            kernel_size=(1, 3),
+            stride=(1, 1),
+            padding=(0, 1),
+        )
+        self.bn3 = nn.BatchNorm2d(128)
+        self.act3 = nn.ReLU()
+        self.pool3 = nn.Identity()
 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.flatten = nn.Flatten()
+        self.feature_dim = 128
+
+    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool1(self.act1(self.bn1(self.conv1(x))))
+        x = self.pool2(self.act2(self.bn2(self.conv2(x))))
+        x = self.pool3(self.act3(self.bn3(self.conv3(x))))
+        x = self.global_pool(x)
+        return self.flatten(x)
+
+
+class ParallelCNNModel(_CNNBase):
+    """Parallel regression + topology heads sharing a trunk."""
+
+    def __init__(
+        self,
+        *,
+        num_taxa: int,
+        num_outputs: int,
+        in_channels: int = 4,
+        label_transform: str | None = None,
+        tree_rooted: bool = True,
+        topology_classification: bool = False,
+        num_topology_classes: int | None = None,
+    ) -> None:
+        super().__init__(
+            num_taxa=num_taxa,
+            num_outputs=num_outputs,
+            in_channels=in_channels,
+            label_transform=label_transform,
+            tree_rooted=tree_rooted,
+            topology_classification=topology_classification,
+            num_topology_classes=num_topology_classes,
+        )
+        self.architecture = "parallel"
 
         # Regression head (MLP)
-        self.reg_fc1 = nn.Linear(64, 256)
+        self.reg_fc1 = nn.Linear(self.feature_dim, 256)
         self.reg_act1 = nn.ReLU()
         self.reg_drop1 = nn.Dropout(0.1)
 
@@ -78,7 +120,7 @@ class CNNModel(nn.Module):
 
         # Topology classification head (MLP)
         if topology_classification and num_topology_classes is not None:
-            self.top_fc1 = nn.Linear(64, 256)
+            self.top_fc1 = nn.Linear(self.feature_dim, 256)
             self.top_act1 = nn.ReLU()
             self.top_drop1 = nn.Dropout(0.1)
             self.top_fc2 = nn.Linear(256, 128)
@@ -95,11 +137,7 @@ class CNNModel(nn.Module):
             self.topology_head = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        x = self.pool1(self.act1(self.conv1(x)))
-        x = self.pool2(self.act2(self.conv2(x)))
-        x = self.global_pool(x)
-        x = self.flatten(x)
-
+        x = self._encode(x)
         reg = self.reg_drop1(self.reg_act1(self.reg_fc1(x)))
         reg = self.reg_drop2(self.reg_act2(self.reg_fc2(reg)))
         y_br = self.output_layer(reg)
@@ -134,33 +172,118 @@ class CNNModel(nn.Module):
             tree_rooted=tree_rooted,
         )
 
+
+class SerialCNNModel(_CNNBase):
+    """Serial regression -> topology classification (classification sees regression output)."""
+
+    def __init__(
+        self,
+        *,
+        num_taxa: int,
+        num_outputs: int,
+        in_channels: int = 4,
+        label_transform: str | None = None,
+        tree_rooted: bool = True,
+        topology_classification: bool = False,
+        num_topology_classes: int | None = None,
+    ) -> None:
+        super().__init__(
+            num_taxa=num_taxa,
+            num_outputs=num_outputs,
+            in_channels=in_channels,
+            label_transform=label_transform,
+            tree_rooted=tree_rooted,
+            topology_classification=topology_classification,
+            num_topology_classes=num_topology_classes,
+        )
+        self.architecture = "serial"
+
+        # Regression head (MLP)
+        self.reg_fc1 = nn.Linear(self.feature_dim, 256)
+        self.reg_act1 = nn.ReLU()
+        self.reg_drop1 = nn.Dropout(0.1)
+
+        self.reg_fc2 = nn.Linear(256, 128)
+        self.reg_act2 = nn.ReLU()
+        self.reg_drop2 = nn.Dropout(0.1)
+
+        self.output_layer = nn.Linear(128, num_outputs)
+
+        # Topology classification head (MLP), fed by trunk + regression output
+        if topology_classification and num_topology_classes is not None:
+            top_input_dim = self.feature_dim + num_outputs
+            self.top_fc1 = nn.Linear(top_input_dim, 256)
+            self.top_act1 = nn.ReLU()
+            self.top_drop1 = nn.Dropout(0.1)
+            self.top_fc2 = nn.Linear(256, 128)
+            self.top_act2 = nn.ReLU()
+            self.top_drop2 = nn.Dropout(0.1)
+            self.topology_head = nn.Linear(128, num_topology_classes)
+        else:
+            self.top_fc1 = None
+            self.top_act1 = None
+            self.top_drop1 = None
+            self.top_fc2 = None
+            self.top_act2 = None
+            self.top_drop2 = None
+            self.topology_head = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        x = self._encode(x)
+        reg = self.reg_drop1(self.reg_act1(self.reg_fc1(x)))
+        reg = self.reg_drop2(self.reg_act2(self.reg_fc2(reg)))
+        y_br = self.output_layer(reg)
+        if self.topology_head is None:
+            return y_br
+        top_input = torch.cat([x, y_br], dim=1)
+        top = self.top_drop1(self.top_act1(self.top_fc1(top_input)))
+        top = self.top_drop2(self.top_act2(self.top_fc2(top)))
+        y_top = self.topology_head(top)
+        return y_br, y_top
+
     def __str__(self) -> str:
+        architecture = getattr(self, "architecture", "parallel")
+        top_in = (
+            self.top_fc1.in_features
+            if getattr(self, "top_fc1", None) is not None
+            else "n/a"
+        )
         return "\n".join(
             [
                 "CNNModel architecture:",
+                f"  Regression/Classification: {architecture}",
                 f"  Inputs: in_channels={self.in_channels}, num_taxa={self.num_taxa}, rooted={self.tree_rooted}",
                 f"  Label transform: {self.label_transform_strategy}",
                 f"  Outputs: num_outputs={self.num_outputs}",
                 "  Convolutional Layers:",
-                "    conv1: Conv2d(in_channels={in_c}, out_channels=64, kernel_size={kernel}, stride={stride}, padding={padding})".format(
+                "    conv1: Conv2d(in_channels={in_c}, out_channels=128, kernel_size={kernel}, stride={stride}, padding={padding})".format(
                     in_c=self.conv1.in_channels,
                     kernel=format_tuple(self.conv1.kernel_size),
                     stride=format_tuple(self.conv1.stride),
                     padding=format_tuple(self.conv1.padding),
                 ),
+                "      norm: BatchNorm2d(128)",
                 f"      activation: {self.act1.__class__.__name__}",
                 f"      pool: {self.pool1.__class__.__name__}",
-                "    conv2: Conv2d(in_channels=64, out_channels=128, kernel_size={kernel}, stride={stride}, padding={padding})".format(
+                "    conv2: Conv2d(in_channels=128, out_channels=128, kernel_size={kernel}, stride={stride}, padding={padding})".format(
                     kernel=format_tuple(self.conv2.kernel_size),
                     stride=format_tuple(self.conv2.stride),
                     padding=format_tuple(self.conv2.padding),
                 ),
+                "      norm: BatchNorm2d(128)",
                 f"      activation: {self.act2.__class__.__name__}",
                 "      pool: {name}(kernel_size={kernel}, stride={stride})".format(
                     name=self.pool2.__class__.__name__,
                     kernel=format_tuple(getattr(self.pool2, "kernel_size", ())),
                     stride=format_tuple(getattr(self.pool2, "stride", ())),
                 ),
+                "    conv3: Conv2d(in_channels=128, out_channels=128, kernel_size={kernel}, stride={stride}, padding={padding})".format(
+                    kernel=format_tuple(self.conv3.kernel_size),
+                    stride=format_tuple(self.conv3.stride),
+                    padding=format_tuple(self.conv3.padding),
+                ),
+                "      norm: BatchNorm2d(128)",
+                f"      activation: {self.act3.__class__.__name__}",
                 f"  Global pooling: {self.global_pool.__class__.__name__}",
                 "  Regression head:",
                 "    reg_fc1: Linear(in_features={in_f}, out_features={out_f})".format(
@@ -182,7 +305,7 @@ class CNNModel(nn.Module):
                 f"  Topology classification: {self.topology_classification}",
                 (
                     "  Topology head: Linear(in_features={in_f}, out_features={out_f})".format(
-                        in_f=self.topology_head.in_features,
+                        in_f=top_in,
                         out_f=self.topology_head.out_features,
                     )
                     if self.topology_head is not None
@@ -190,3 +313,7 @@ class CNNModel(nn.Module):
                 ),
             ]
         )
+
+
+# Backwards compatibility: CNNModel points to the parallel architecture.
+CNNModel = ParallelCNNModel

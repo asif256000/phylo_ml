@@ -22,7 +22,7 @@ from sklearn.metrics import (
 from torch.utils.data import DataLoader, Dataset
 
 from .config import TrainingConfig
-from .model import CNNModel
+from .model import ParallelCNNModel, SerialCNNModel
 
 
 def _get_model_summary(
@@ -778,7 +778,9 @@ class Trainer:
                 y_top_raw = y_top_raw[:, None]
             num_topology_classes = int(y_top_raw.shape[1])
 
-        model = CNNModel(
+        architecture = model_cfg.regression_classification_architecture
+        model_cls = SerialCNNModel if architecture == "serial" else ParallelCNNModel
+        model = model_cls(
             num_taxa=num_clades,
             num_outputs=effective_outputs,
             in_channels=model_cfg.in_channels or num_channels,
