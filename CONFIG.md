@@ -54,6 +54,9 @@ This document describes all configuration fields used by the CNN and KAN modules
   - Whether the tree is rooted. Used in model metadata and output summaries.
 - `model.topology_classification` (bool, optional, default: `false`)
   - If `true`, CNN adds a topology classification head and expects `y_top` in the dataset.
+- `model.regression_classification_architecture` (string, optional, default: `parallel`)
+  - `parallel`: regression and classification heads consume the shared trunk features.
+  - `serial`: classification head consumes shared trunk features **plus** regression outputs.
 - `model.regression_weight` (float, optional, default: `1.0`)
   - Multiplier for regression loss (MSE).
 - `model.topology_weight` (float, optional, default: `1.0`)
