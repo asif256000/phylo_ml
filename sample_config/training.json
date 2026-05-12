@@ -20,6 +20,7 @@
       "rooted": true,
       "num_outputs": 3,
       "topology_classification": false,
+      "regression_classification_architecture": "parallel",
       "topology_weight": 1.0
     },
     "outputs": {
