@@ -4,6 +4,7 @@
 **.txt
 **.csv
 **.out
+**.job
 **.egg-info
 bkp_**
 phylo_*.sh
