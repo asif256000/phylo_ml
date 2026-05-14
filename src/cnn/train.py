@@ -795,7 +795,7 @@ class Trainer:
             num_clades=num_clades,
             seq_length=seq_length,
             num_channels=num_channels,
-            batch_size=min(data_cfg.batch_size, 4),
+            batch_size=data_cfg.batch_size,
         )
         print("\n" + "=" * 60)
         print(model_summary)
