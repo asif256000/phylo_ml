@@ -37,45 +37,58 @@ class _CNNBase(nn.Module):
         self.num_topology_classes = num_topology_classes
 
         # Convolutional stack (deeper + batch norm to improve topology signals)
+        #TF: Conv2D(filters=64, kernel_size=(3, 1), activation="relu", padding="same")
+        #trying kernel_size=(num_taxa, 2), and stride=(num_taxa, 1)
         self.conv1 = nn.Conv2d(
             in_channels=in_channels,
-            out_channels=128,
+            out_channels=64,
             kernel_size=(num_taxa, 1),
-            stride=(num_taxa, 1),
-            padding=(0, 1),
+            # kernel_size=(num_taxa, 2),
+            #stride=(num_taxa, 1),
+             stride=(1, 1),
+            #padding=(0, 1),
+            padding="same",
         )
-        self.bn1 = nn.BatchNorm2d(128)
+        self.bn1 = nn.BatchNorm2d(64)
         self.act1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
+        #self.pool1 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
 
+        #TF: x = Conv2D(filters=128, kernel_size=(3, 4), activation="relu", padding="same")(x)
         self.conv2 = nn.Conv2d(
-            in_channels=128,
+            in_channels=64,
             out_channels=128,
-            kernel_size=(1, 3),
+            kernel_size=(num_taxa, 4),
             stride=(1, 1),
-            padding=(0, 1),
+            #padding=(0, 1),
+            padding="same",
         )
         self.bn2 = nn.BatchNorm2d(128)
         self.act2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2))
+        #TF: x = MaxPooling2D(pool_size=(1, 2))(x)
+        self.pool2 = nn.MaxPool2d(kernel_size=(1, 2), stride=(1, 2)) #stride=(1, 2) is equivalent to default when kernel_size=(1, 2)
 
+        #x = Conv2D(filters=128, kernel_size=(3, 4), activation="relu", padding="same")(x)
         self.conv3 = nn.Conv2d(
             in_channels=128,
             out_channels=128,
-            kernel_size=(1, 3),
+            kernel_size=(num_taxa, 4),
             stride=(1, 1),
-            padding=(0, 1),
+            #padding=(0, 1),
+            padding="same",
         )
         self.bn3 = nn.BatchNorm2d(128)
         self.act3 = nn.ReLU()
-        self.pool3 = nn.Identity()
-
+        #Tf: x = MaxPooling2D(pool_size=(1, 2))(x)
+        #self.pool3 = nn.Identity()
+        self.pool3 = nn.MaxPool2d(kernel_size=(1, 2),stride=(1, 2))
+        
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.flatten = nn.Flatten()
         self.feature_dim = 128
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool1(self.act1(self.bn1(self.conv1(x))))
+        #x = self.pool1(self.act1(self.bn1(self.conv1(x))))
+        x = self.act1(self.bn1(self.conv1(x)))
         x = self.pool2(self.act2(self.bn2(self.conv2(x))))
         x = self.pool3(self.act3(self.bn3(self.conv3(x))))
         x = self.global_pool(x)
@@ -84,7 +97,6 @@ class _CNNBase(nn.Module):
 
 class ParallelCNNModel(_CNNBase):
     """Parallel regression + topology heads sharing a trunk."""
-
     def __init__(
         self,
         *,
@@ -106,26 +118,36 @@ class ParallelCNNModel(_CNNBase):
             num_topology_classes=num_topology_classes,
         )
         self.architecture = "parallel"
+        #TF: added the dropout_rate=0.1 
+        self.dropout_rate = 0.1
+
+        # Add shared dense layer (equivalent to TF's Dense(128, activation="relu"))
+        self.shared_fc = nn.Linear(self.feature_dim, 128)  # self.feature_dim is 128 from convs
+        self.shared_act = nn.ReLU()
+        self.shared_drop = nn.Dropout(self.dropout_rate)  # Equivalent to TF's Dropout(dropout_rate)
+        
 
         # Regression head (MLP)
-        self.reg_fc1 = nn.Linear(self.feature_dim, 256)
+        #self.reg_fc1 = nn.Linear(self.feature_dim, 256)
+        self.reg_fc1 = nn.Linear(self.feature_dim, 128)
         self.reg_act1 = nn.ReLU()
         self.reg_drop1 = nn.Dropout(0.1)
 
-        self.reg_fc2 = nn.Linear(256, 128)
-        self.reg_act2 = nn.ReLU()
-        self.reg_drop2 = nn.Dropout(0.1)
+        #self.reg_fc2 = nn.Linear(256, 128)
+        #self.reg_act2 = nn.ReLU()
+        #self.reg_drop2 = nn.Dropout(0.1)
 
         self.output_layer = nn.Linear(128, num_outputs)
 
         # Topology classification head (MLP)
         if topology_classification and num_topology_classes is not None:
-            self.top_fc1 = nn.Linear(self.feature_dim, 256)
+            #self.top_fc1 = nn.Linear(self.feature_dim, 256)
+            self.top_fc1 = nn.Linear(self.feature_dim, 128)
             self.top_act1 = nn.ReLU()
             self.top_drop1 = nn.Dropout(0.1)
-            self.top_fc2 = nn.Linear(256, 128)
-            self.top_act2 = nn.ReLU()
-            self.top_drop2 = nn.Dropout(0.1)
+            #self.top_fc2 = nn.Linear(256, 128)
+            #self.top_act2 = nn.ReLU()
+            #self.top_drop2 = nn.Dropout(0.1)
             self.topology_head = nn.Linear(128, num_topology_classes)
         else:
             self.top_fc1 = None
@@ -138,14 +160,18 @@ class ParallelCNNModel(_CNNBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         x = self._encode(x)
+        #Apply shared dense layer before branching to regression and topology heads
+        x = self.shared_drop(self.shared_act(self.shared_fc(x)))
         reg = self.reg_drop1(self.reg_act1(self.reg_fc1(x)))
-        reg = self.reg_drop2(self.reg_act2(self.reg_fc2(reg)))
+        #reg = self.reg_drop2(self.reg_act2(self.reg_fc2(reg)))
         y_br = self.output_layer(reg)
         if self.topology_head is None:
             return y_br
         top = self.top_drop1(self.top_act1(self.top_fc1(x)))
-        top = self.top_drop2(self.top_act2(self.top_fc2(top)))
+        #top = self.top_drop2(self.top_act2(self.top_fc2(top)))
         y_top = self.topology_head(top)
+        #TF: add the softmax activation to the topology head output for classification
+        y_top = torch.softmax(y_top, dim=1)
         return y_br, y_top
 
     @classmethod
