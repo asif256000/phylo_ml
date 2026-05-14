@@ -5,12 +5,13 @@
 **.csv
 **.out
 **.job
+**.pdf
 **.egg-info
 bkp_**
 phylo_*.sh
 .vscode
 .DS_Store
 **/__pycache__/
-AGENT.*
+**/AGENT_INSTRUCTIONS*
 .venv
 config/
