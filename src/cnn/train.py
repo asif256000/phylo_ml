@@ -13,6 +13,7 @@ from sklearn.metrics import (
     accuracy_score,
     classification_report,
     confusion_matrix,
+    ConfusionMatrixDisplay,
     mean_absolute_error,
     mean_squared_error,
     precision_recall_fscore_support,
@@ -717,6 +718,20 @@ def _plot_loss_curve(train_losses: list[float], val_losses: list[float], output_
     fig.savefig(output_path)
     plt.close(fig)
 
+#Add a new function to plot the confusion matrix for topology classification results, saving it as a PDF file.
+def _plot_topology_confusion_matrix(y_true, y_pred, out_pdf, labels=None, normalize=None, title="Confusion matrix"):
+    cm = confusion_matrix(y_true, y_pred, labels=labels, normalize=normalize)
+    if normalize is not None:
+        cm = cm * 100.0
+    
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    disp.plot(ax=ax, values_format=".2f" if normalize is not None else "d", cmap=plt.cm.Blues, colorbar=True)
+    ax.set_title(title)
+    plt.tight_layout()
+    plt.savefig(out_pdf, format='pdf', dpi=300)  # Ensure PDF format
+    plt.close(fig)
+    print(f"Saved confusion matrix PDF: {out_pdf}")
 
 class Trainer:
     """Trainer for CNN regression with optional topology classification."""
@@ -1031,6 +1046,15 @@ class Trainer:
             ]
             topology_report = classification_report(true_classes, pred_classes, zero_division=0)
             topology_confusion = confusion_matrix(true_classes, pred_classes)
+            #call the new function to plot the confusion matrix and save it as a PDF
+            _plot_topology_confusion_matrix(
+                y_true=true_classes,
+                y_pred=pred_classes,
+                out_pdf=plots_dir / "confusion_matrix.pdf",
+                labels=None,  # Or pass a list like [0, 1, 2] if you have class names
+                normalize='true',
+                title="Topology Classification Confusion Matrix"
+            )
             print(
                 "Topology Metrics | Accuracy: {acc:.4f} | Macro F1: {f1:.4f}".format(
                     acc=topology_metrics["accuracy"],
