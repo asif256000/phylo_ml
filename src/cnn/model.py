@@ -43,11 +43,9 @@ class _CNNBase(nn.Module):
             in_channels=in_channels,
             out_channels=64,
             kernel_size=(num_taxa, 1),
-            # kernel_size=(num_taxa, 2),
-            #stride=(num_taxa, 1),
-             stride=(1, 1),
-            #padding=(0, 1),
-            padding="same",
+            stride=(num_taxa, 1),
+            padding=0,
+            #padding="same",
         )
         self.bn1 = nn.BatchNorm2d(64)
         self.act1 = nn.ReLU()
@@ -57,10 +55,10 @@ class _CNNBase(nn.Module):
         self.conv2 = nn.Conv2d(
             in_channels=64,
             out_channels=128,
-            kernel_size=(num_taxa, 4),
+            kernel_size=(1, 1),
             stride=(1, 1),
-            #padding=(0, 1),
-            padding="same",
+            padding=0,
+            #padding="same",
         )
         self.bn2 = nn.BatchNorm2d(128)
         self.act2 = nn.ReLU()
@@ -71,10 +69,10 @@ class _CNNBase(nn.Module):
         self.conv3 = nn.Conv2d(
             in_channels=128,
             out_channels=128,
-            kernel_size=(num_taxa, 4),
+            kernel_size=(1, 3),
             stride=(1, 1),
             #padding=(0, 1),
-            padding="same",
+            padding=0,
         )
         self.bn3 = nn.BatchNorm2d(128)
         self.act3 = nn.ReLU()
