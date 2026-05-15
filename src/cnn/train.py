@@ -4,6 +4,9 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+#for branch length regression metrics
+import os
+from scipy.stats import gaussian_kde, ttest_rel
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -475,75 +478,6 @@ def _collect_predictions(
     return preds_arr, trues_arr, pred_top_arr, true_top_arr
 
 
-def _plot_branch_pair(
-    true_vals: np.ndarray,
-    pred_vals: np.ndarray,
-    output_path: Path,
-    title: str,
-    bins: int = 60,
-) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(6, 6))
-    combined = np.concatenate([true_vals, pred_vals])
-    lower = float(np.percentile(combined, 0.5))
-    upper = float(np.percentile(combined, 99.5))
-    if not np.isfinite(lower) or not np.isfinite(upper) or lower == upper:
-        lower = float(np.min(combined))
-        upper = float(np.max(combined))
-        if lower == upper:
-            upper = lower + 1.0
-
-    ax.set_facecolor("white")
-    base_cmap = plt.cm.get_cmap("magma", 256)
-    cmap_colors = base_cmap(np.linspace(0, 1, 256))
-    cmap_colors[0, :3] = 1.0
-    density_cmap = colors.ListedColormap(cmap_colors)
-    hist = ax.hist2d(
-        true_vals,
-        pred_vals,
-        bins=bins,
-        range=[[lower, upper], [lower, upper]],
-        cmap=density_cmap,
-        vmin=0.5,
-    )
-    fig.colorbar(hist[3], ax=ax, label="Count")
-    ax.plot([lower, upper], [lower, upper], linestyle="--", color="black", linewidth=1)
-    ax.set_xlabel("True branch length")
-    ax.set_ylabel("Predicted branch length")
-    ax.set_title(title)
-    ax.set_xlim(lower, upper)
-    ax.set_ylim(lower, upper)
-    fig.tight_layout()
-    fig.savefig(output_path)
-    plt.close(fig)
-
-
-def _plot_branch_pair_high_def(
-    true_vals: np.ndarray,
-    pred_vals: np.ndarray,
-    output_path: Path,
-    title: str,
-    fraction: float = 0.25,
-) -> None:
-    combined = np.concatenate([true_vals, pred_vals])
-    finite_mask = np.isfinite(combined)
-    if not np.any(finite_mask):
-        return
-    finite_vals = combined[finite_mask]
-    min_val = float(np.min(finite_vals))
-    max_val = float(np.max(finite_vals))
-    span = max_val - min_val
-    if span <= 0 or not np.isfinite(span):
-        return
-
-    cutoff = min_val + fraction * span
-    branch_mask = np.isfinite(true_vals) & np.isfinite(pred_vals) & (true_vals <= cutoff) & (pred_vals <= cutoff)
-    if not np.any(branch_mask):
-        return
-
-    _plot_branch_pair(true_vals[branch_mask], pred_vals[branch_mask], output_path, title, bins=150)
-
-
 def _summarize_branch_metrics(true_vals: np.ndarray, pred_vals: np.ndarray) -> dict[str, float]:
     mae = float(mean_absolute_error(true_vals, pred_vals))
     mse = float(mean_squared_error(true_vals, pred_vals))
@@ -697,6 +631,185 @@ def _save_predictions_and_metrics(
         f.write(f"Final Train Loss: {train_losses[-1]:.6f}\n")
         f.write(f"Final Val Loss: {val_losses[-1]:.6f}\n")
 
+#New plotting functions for branch length density
+def collapse_branches(brls: np.ndarray, num_taxa: int) -> tuple[np.ndarray, list[str]]:
+    """Generalized branch collapsing for density plots.
+    Assumes branches are ordered as pairs: for n taxa, collapses 2*(n-1) branches into n-1.
+    Labels: For n=3: ['b_A', 'b_B', 'b_C']; for n=4: ['b_I', 'b_A', 'b_B', 'b_C', 'b_D'].
+    """
+    expected_branches_by_taxa = {3:6, 4:10} # For 3 taxa: 6 branches (2 per taxon); for 4 taxa: 10 branches (2 internal + 2 per taxon)
+    if num_taxa not in expected_branches_by_taxa:
+        raise ValueError(f"Unsupported num_taxa: {num_taxa}. Only 3 and 4 are supported.")
+    expected_branches=expected_branches_by_taxa[num_taxa]
+    if brls.shape[1] != expected_branches:
+        raise ValueError(f"Expected {expected_branches} branches for {num_taxa} taxa, got {brls.shape[1]}")
+    
+    collapsed = []
+    labels = []
+    if num_taxa == 3:
+        # A: 0+1, B: 2+3, C: 4+5
+        collapsed = [
+            brls[:, 0] + brls[:, 1],
+            brls[:, 2] + brls[:, 3],
+            brls[:, 4] + brls[:, 5]
+        ]
+        labels = [r"$b_A$", r"$b_B$", r"$b_C$"]
+    elif num_taxa == 4:
+        # I: 8+9, A: 0+1, B: 2+3, C: 4+5, D: 6+7
+        collapsed = [
+            brls[:, 8] + brls[:, 9],  # I
+            brls[:, 0] + brls[:, 1],  # A
+            brls[:, 2] + brls[:, 3],  # B
+            brls[:, 4] + brls[:, 5],  # C
+            brls[:, 6] + brls[:, 7]   # D
+        ]
+        labels = [r"$b_I$", r"$b_A$", r"$b_B$", r"$b_C$", r"$b_D$"]
+    else:
+        raise ValueError(f"Unsupported num_taxa: {num_taxa}. Only 3 and 4 are supported.")
+    
+    return np.column_stack(collapsed), labels
+
+def _safe_kde_values(values, grid):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+
+    if values.size == 0:
+        return np.zeros_like(grid)
+
+    if values.size < 2 or np.std(values) < 1e-12:
+        mu = float(np.mean(values))
+        sigma = max(1e-3, 0.03 * max(abs(mu), 1.0))
+        y = np.exp(-0.5 * ((grid - mu) / sigma) ** 2) / (sigma * np.sqrt(2 * np.pi))
+        return y
+
+    kde = gaussian_kde(values)
+    return kde(grid)
+
+
+def _format_pvalue(p):
+    if p < 1e-4:
+        return "0"
+    return f"{p:.4f}"
+
+
+def _plot_density(ax, true_vals, pred_vals, title, text_str):
+    true_vals = np.asarray(true_vals, dtype=float)
+    pred_vals = np.asarray(pred_vals, dtype=float)
+
+    xmin = min(np.min(true_vals), np.min(pred_vals))
+    xmax = max(np.max(true_vals), np.max(pred_vals))
+    span = xmax - xmin
+    pad = 0.1 * span if span > 0 else 0.1
+    grid = np.linspace(max(0.0, xmin - pad), xmax + pad, 400)
+
+    y_true = _safe_kde_values(true_vals, grid)
+    y_pred = _safe_kde_values(pred_vals, grid)
+
+    ax.fill_between(grid, 0, y_pred, color="red", alpha=0.35, label="Predicted")
+    ax.plot(grid, y_pred, color="black", linewidth=1.5)
+
+    ax.fill_between(grid, 0, y_true, color="blue", alpha=0.35, label="True")
+    ax.plot(grid, y_true, color="black", linewidth=1.5)
+
+    ax.axvline(np.median(pred_vals), color="red", linestyle=(0, (6, 4)), linewidth=2)
+    ax.axvline(np.median(true_vals), color="blue", linestyle=(0, (6, 4)), linewidth=2)
+
+    ax.set_title(title, fontsize=16)
+    ax.text(0.98, 0.95, text_str, transform=ax.transAxes, ha="right", va="top", fontsize=11, color="black")
+
+
+def plot_overall_branch_density(true_brl, pred_brl, out_svg, taxa_count: int):
+    if taxa_count == 3:
+        true_c, labels = collapse_branches(true_brl, num_taxa=taxa_count)
+        pred_c, _ = collapse_branches(pred_brl, num_taxa=taxa_count)
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5.5))
+        axes = np.asarray(axes).flatten()
+        n_panels = 3
+    elif taxa_count == 4:
+        true_c, labels = collapse_branches(true_brl, num_taxa=taxa_count)
+        pred_c, _ = collapse_branches(pred_brl, num_taxa=taxa_count)
+        fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+        axes = axes.flatten()
+        n_panels = 5
+    else:
+        raise ValueError(f"Unsupported taxa_count: {taxa_count}")
+
+    for i in range(n_panels):
+        mse = mean_squared_error(true_c[:, i], pred_c[:, i])
+        r2 = r2_score(true_c[:, i], pred_c[:, i])
+        pval = ttest_rel(true_c[:, i], pred_c[:, i]).pvalue
+        text_str = f"MSE = {mse:.4f}\nR² = {r2:.4f}\np = {_format_pvalue(pval)}"
+        _plot_density(axes[i], true_c[:, i], pred_c[:, i], labels[i], text_str)
+
+    for j in range(n_panels, len(axes)):
+        axes[j].axis("off")
+
+    handles = [
+        plt.Line2D([0], [0], color="red", lw=10, alpha=0.35, label="Predicted"),
+        plt.Line2D([0], [0], color="blue", lw=10, alpha=0.35, label="True"),
+    ]
+    fig.legend(handles=handles, loc="center right", fontsize=13)
+    fig.text(0.5, 0.02, "Branch Length", ha="center", fontsize=18)
+    fig.text(0.03, 0.5, "Density", va="center", rotation="vertical", fontsize=18)
+    plt.tight_layout(rect=[0.05, 0.05, 0.9, 0.98])
+    plt.savefig(out_svg) #, dpi=300)
+    plt.close(fig)
+    print(f"Saved overall density plot: {out_svg}")
+
+
+def plot_root_branch_pairs_by_class(true_brl, pred_brl, true_class_names, out_dir, taxa_count: int):
+    os.makedirs(out_dir, exist_ok=True)
+    true_class_names = np.asarray(true_class_names)
+
+    if taxa_count == 3:
+        root_pair_map = {"A": (0, 1), "B": (2, 3), "C": (4, 5),
+                         0: (0, 1), 1: (2, 3), 2: (4, 5)}
+
+        ordered = ["A", "B", "C", 0, 1, 2]
+        title_map = {"A": "Root on A", "B": "Root on B", "C": "Root on C",
+                     0: "Root on A", 1: "Root on B", 2: "Root on C"}
+        filename_prefix = "RootBranchPairs"
+    elif taxa_count == 4:
+        root_pair_map = {"I": (8, 9), "A": (0, 1), "B": (2, 3), "C": (4, 5), "D": (6, 7), 0: (8, 9), 1: (0, 1), 2: (2, 3), 3: (4, 5), 4: (6, 7)}
+        ordered = ["I", "A", "B", "C", "D", 0, 1, 2, 3, 4]
+        title_map = {"I": "Internal branch", "A": "Root on A", "B": "Root on B", "C": "Root on C", "D": "Root on D", 0: "Internal branch", 1: "Root on A", 2: "Root on B", 3: "Root on C", 4: "Root on D"}
+        filename_prefix = "RootBranchPairs"
+    else:
+        raise ValueError(f"Unsupported taxa_count: {taxa_count}")
+
+    for root_name in ordered:
+        # str comparison handles numeric labels saved as strings.
+        mask = true_class_names.astype(str) == str(root_name)
+        if mask.sum() == 0 or root_name not in root_pair_map:
+            continue
+
+        c1, c2 = root_pair_map[root_name]
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+
+        for ax, col_idx, part in zip(axes, [c1, c2], [1, 2]):
+            true_vals = true_brl[mask, col_idx]
+            pred_vals = pred_brl[mask, col_idx]
+
+            mse = mean_squared_error(true_vals, pred_vals)
+            r2 = r2_score(true_vals, pred_vals)
+            pval = ttest_rel(true_vals, pred_vals).pvalue
+            text_str = f"MSE = {mse:.4f}\nR² = {r2:.4f}\np = {_format_pvalue(pval)}"
+            title = rf"$b_{{{root_name}{part}}}$"
+            if taxa_count == 4 and str(root_name) in {"I", "1"}:
+                title = rf"$b_{{R{part}}}$"
+            _plot_density(ax, true_vals, pred_vals, title, text_str)
+
+        fig.suptitle(title_map.get(root_name, f"Class {root_name}"), fontsize=20, fontweight="bold")
+        fig.text(0.5, 0.03, "Branch Length", ha="center", fontsize=16)
+        fig.text(0.03, 0.5, "Density", va="center", rotation="vertical", fontsize=16)
+        plt.tight_layout(rect=[0.05, 0.05, 1.0, 0.9])
+
+        safe_name = str(root_name).replace("/", "_")
+        out_svg = os.path.join(out_dir, f"{filename_prefix}_{safe_name}.svg")
+        plt.savefig(out_svg) #, dpi=300)
+        plt.close(fig)
+        print(f"Saved root-branch pair plot: {out_svg}")
+
 
 def _plot_loss_curve(train_losses: list[float], val_losses: list[float], output_path: Path) -> None:
     if not train_losses and not val_losses:
@@ -718,8 +831,8 @@ def _plot_loss_curve(train_losses: list[float], val_losses: list[float], output_
     fig.savefig(output_path)
     plt.close(fig)
 
-#Add a new function to plot the confusion matrix for topology classification results, saving it as a PDF file.
-def _plot_topology_confusion_matrix(y_true, y_pred, out_pdf, labels=None, normalize=None, title="Confusion matrix"):
+#Add a new function to plot the confusion matrix for topology classification results, saving it as a svg file.
+def _plot_topology_confusion_matrix(y_true, y_pred, out_svg, labels=None, normalize=None, title="Confusion matrix"):
     cm = confusion_matrix(y_true, y_pred, labels=labels, normalize=normalize)
     if normalize is not None:
         cm = cm * 100.0
@@ -729,9 +842,9 @@ def _plot_topology_confusion_matrix(y_true, y_pred, out_pdf, labels=None, normal
     disp.plot(ax=ax, values_format=".2f" if normalize is not None else "d", cmap=plt.cm.Blues, colorbar=True)
     ax.set_title(title)
     plt.tight_layout()
-    plt.savefig(out_pdf, format='pdf', dpi=300)  # Ensure PDF format
+    plt.savefig(out_svg, format='svg')#, dpi=300)  # Ensure svg format
     plt.close(fig)
-    print(f"Saved confusion matrix PDF: {out_pdf}")
+    print(f"Saved confusion matrix svg: {out_svg}")
 
 class Trainer:
     """Trainer for CNN regression with optional topology classification."""
@@ -917,7 +1030,7 @@ class Trainer:
         plots_dir = results_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
 
-        _plot_loss_curve(train_losses, val_losses, plots_dir / "loss_curve.png")
+        _plot_loss_curve(train_losses, val_losses, plots_dir / "loss_curve.svg")
 
         preds, trues, pred_top, true_top = _collect_predictions(
             model,
@@ -926,6 +1039,49 @@ class Trainer:
             self.transformer,
             model_cfg.topology_classification,
         )
+        correct_mask = None
+        pred_classes = None
+        true_classes = None
+        if model_cfg.topology_classification and pred_top is not None and true_top is not None:
+            pred_classes = np.argmax(pred_top, axis=1)
+            true_classes = true_top.astype(int) if true_top.ndim == 1 else np.argmax(true_top, axis=1)
+            correct_mask = pred_classes == true_classes
+        
+        if outputs_cfg.individual_branch_plots:
+            plot_overall_branch_density(
+                trues,
+                preds,
+                plots_dir / "overall_branch_density.svg",
+                taxa_count=num_clades,
+            )
+            if model_cfg.topology_classification:
+                plot_root_branch_pairs_by_class(
+                    trues,
+                    preds,
+                    true_classes,
+                    out_dir=plots_dir / "root_branch_pairs",
+                    taxa_count=num_clades,
+                )
+
+            if (
+                outputs_cfg.correct_only
+                and model_cfg.topology_classification
+                and correct_mask is not None
+                and np.any(correct_mask)
+            ):
+                plot_overall_branch_density(
+                    trues[correct_mask],
+                    preds[correct_mask],
+                    plots_dir / "overall_branch_density_correct_only.svg",
+                    taxa_count=num_clades,
+                )
+                plot_root_branch_pairs_by_class(
+                    trues[correct_mask],
+                    preds[correct_mask],
+                    true_classes[correct_mask],
+                    out_dir=plots_dir / "root_branch_pairs_correct_only",
+                    taxa_count=num_clades,
+                )
         branch_metrics_list: list[dict[str, float]] = []
         sum_metrics: dict[str, float] | None = None
         overall_metrics: dict[str, float] | None = None
@@ -933,25 +1089,13 @@ class Trainer:
         topology_report: str | None = None
         topology_confusion: np.ndarray | None = None
         topology_class_metrics: list[dict[str, float]] | None = None
+        
         if preds.size > 0 and trues.size > 0:
             num_branches = preds.shape[1]
+            # Per-branch metrics loop
             for idx in range(num_branches):
                 pred_branch = preds[:, idx]
                 true_branch = trues[:, idx]
-                if outputs_cfg.individual_branch_plots:
-                    _plot_branch_pair(
-                        true_branch,
-                        pred_branch,
-                        plots_dir / f"branch_b{idx + 1}_scatter.png",
-                        f"Branch b{idx + 1}: true vs predicted",
-                    )
-                    if outputs_cfg.zoomed_plots:
-                        _plot_branch_pair_high_def(
-                            true_branch,
-                            pred_branch,
-                            plots_dir / f"branch_b{idx + 1}_scatter_hd.png",
-                            f"Branch b{idx + 1} HD: true vs predicted",
-                        )
 
                 branch_metrics = _summarize_branch_metrics(true_branch, pred_branch)
                 branch_metrics_list.append(branch_metrics)
@@ -964,7 +1108,8 @@ class Trainer:
                         r2=branch_metrics["r2"],
                     )
                 )
-
+            
+            
             # Compute total/sum metrics regardless of plotting preference
             true_sum = np.sum(trues, axis=1)
             pred_sum = np.sum(preds, axis=1)
@@ -977,13 +1122,6 @@ class Trainer:
                     r2=sum_metrics["r2"],
                 )
             )
-            if outputs_cfg.branch_sum_plots:
-                _plot_branch_pair(
-                    true_sum,
-                    pred_sum,
-                    plots_dir / "branch_sum_scatter.png",
-                    "Branch sum: true vs predicted",
-                )
 
             # Overall metrics across all branches (flattened):
             # We treat each branch-length value independently by flattening
@@ -1001,12 +1139,9 @@ class Trainer:
                 )
             )
 
+        #compute topology classification metrics if enabled and if predictions are available
         if pred_top is not None and true_top is not None:
-            pred_classes = np.argmax(pred_top, axis=1)
-            if true_top.ndim == 1:
-                true_classes = true_top.astype(int)
-            else:
-                true_classes = np.argmax(true_top, axis=1)
+
             precision, recall, f1, support = precision_recall_fscore_support(
                 true_classes,
                 pred_classes,
@@ -1046,11 +1181,11 @@ class Trainer:
             ]
             topology_report = classification_report(true_classes, pred_classes, zero_division=0)
             topology_confusion = confusion_matrix(true_classes, pred_classes)
-            #call the new function to plot the confusion matrix and save it as a PDF
+            #call the new function to plot the confusion matrix and save it as a svg
             _plot_topology_confusion_matrix(
                 y_true=true_classes,
                 y_pred=pred_classes,
-                out_pdf=plots_dir / "confusion_matrix.pdf",
+                out_svg=plots_dir / "confusion_matrix.svg",
                 labels=None,  # Or pass a list like [0, 1, 2] if you have class names
                 normalize='true',
                 title="Topology Classification Confusion Matrix"
