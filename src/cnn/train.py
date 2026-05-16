@@ -308,7 +308,7 @@ def _build_dataloaders(
     seed: int,
     train_ratio: float,
     val_ratio: float,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+) -> tuple[DataLoader, DataLoader, DataLoader, np.ndarray]:
     if y_top is not None:
         if y_top.ndim == 1:
             class_labels = y_top.astype(int)
@@ -332,7 +332,7 @@ def _build_dataloaders(
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin
     )
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader, test_idx
 
 
 def _split_outputs(
@@ -485,6 +485,24 @@ def _summarize_branch_metrics(true_vals: np.ndarray, pred_vals: np.ndarray) -> d
     r2 = float(r2_score(true_vals, pred_vals))
     return {"mae": mae, "mse": mse, "rmse": rmse, "r2": r2}
 
+def _save_test_split(results_dir: Path, dataset: np.memmap, test_idx: np.ndarray,) -> None:
+    """Save the exact test split for external software comparison.
+    The output filenames use the results directory name as a prefix.
+
+    Example:
+        results_dir = test_run_3T_100k_Exp1_1212
+
+    Outputs:
+        test_run_3T_100k_Exp1_1212_test_indices.npy
+        test_run_3T_100k_Exp1_1212_test_dataset.npy
+    """
+    results_prefix =results_dir.name
+    test_indices_file = results_dir/f"{results_prefix}_test_indices.npy"
+    test_dataset_file = results_dir/f"{results_prefix}_test_dataset.npy"
+    np.save(test_indices_file, test_idx)
+    np.save(test_dataset_file, np.asarray(dataset[test_idx])) #saves the raw original dataset records, not the transformed y_br.
+    print(f"Saved test indices: {test_indices_file}")
+    print(f"Saved test dataset: {test_dataset_file}")
 
 def _save_predictions_and_metrics(
     results_dir: Path,
@@ -929,7 +947,7 @@ class Trainer:
         print(model_summary)
         print("=" * 60 + "\n")
 
-        train_loader, val_loader, test_loader = _build_dataloaders(
+        train_loader, val_loader, test_loader, test_idx = _build_dataloaders(
             data=dataset,
             y_br=y_br,
             y_top=y_top_raw,
@@ -1027,6 +1045,7 @@ class Trainer:
         results_dir = outputs_cfg.results_dir.expanduser().resolve()
         results_dir.mkdir(parents=True, exist_ok=True)
         print(f"RESULTS DIR: {results_dir}")
+        _save_test_split(results_dir=results_dir, dataset =dataset, test_idx=test_idx,)
         plots_dir = results_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1047,7 +1066,7 @@ class Trainer:
             true_classes = true_top.astype(int) if true_top.ndim == 1 else np.argmax(true_top, axis=1)
             correct_mask = pred_classes == true_classes
         
-        if outputs_cfg.individual_branch_plots:
+        if outputs_cfg.branch_length_density_plots:
             plot_overall_branch_density(
                 trues,
                 preds,
