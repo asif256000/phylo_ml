@@ -28,9 +28,7 @@ model:
 
 outputs:
   results_dir: branch_plots/sample_run
-  zoomed_plots: true
-  individual_branch_plots: true
-  branch_sum_plots: true
+  branch_length_density_plots: true
   correct_only: true # Whether to plot only correctly predicted samples in branch-specific density plots (default: false)
 
 ---
