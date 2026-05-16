@@ -94,6 +94,8 @@ class OutputSettings:
     zoomed_plots: bool = False
     individual_branch_plots: bool = False
     branch_sum_plots: bool = False
+    branch_length_density_plots: bool = False
+    correct_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -308,12 +310,16 @@ def _parse_output_settings(
     zoomed_plots = bool(output_payload.get("zoomed_plots", False))
     individual_branch_plots = bool(output_payload.get("individual_branch_plots", False))
     branch_sum_plots = bool(output_payload.get("branch_sum_plots", False))
+    branch_length_density_plots = bool(output_payload.get("branch_length_density_plots", False))
+    correct_only = bool(output_payload.get("correct_only", False))
 
     return OutputSettings(
         results_dir=results_dir,
         zoomed_plots=zoomed_plots,
         individual_branch_plots=individual_branch_plots,
         branch_sum_plots=branch_sum_plots,
+        branch_length_density_plots=branch_length_density_plots,
+        correct_only=correct_only,       
     )
 
 
