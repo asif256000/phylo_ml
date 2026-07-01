@@ -6,6 +6,7 @@
 **.out
 **.job
 **.pdf
+**.svg
 **.egg-info
 bkp_**
 phylo_*.sh
@@ -15,3 +16,4 @@ phylo_*.sh
 **/AGENT_INSTRUCTIONS*
 .venv
 config/
+array_job_logs/

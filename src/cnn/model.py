@@ -38,14 +38,12 @@ class _CNNBase(nn.Module):
 
         # Convolutional stack (deeper + batch norm to improve topology signals)
         #TF: Conv2D(filters=64, kernel_size=(3, 1), activation="relu", padding="same")
-        #trying kernel_size=(num_taxa, 2), and stride=(num_taxa, 1)
         self.conv1 = nn.Conv2d(
             in_channels=in_channels,
             out_channels=64,
             kernel_size=(num_taxa, 1),
             stride=(num_taxa, 1),
             padding=0,
-            #padding="same",
         )
         self.bn1 = nn.BatchNorm2d(64)
         self.act1 = nn.ReLU()
@@ -58,7 +56,6 @@ class _CNNBase(nn.Module):
             kernel_size=(1, 1),
             stride=(1, 1),
             padding=0,
-            #padding="same",
         )
         self.bn2 = nn.BatchNorm2d(128)
         self.act2 = nn.ReLU()
